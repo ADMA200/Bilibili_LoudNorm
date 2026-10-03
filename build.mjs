@@ -67,7 +67,7 @@ function buildHeader(version) {
 // @namespace    https://github.com/ADMA200/Bilibili_LoudNorm
 // @version      ${version}
 // @description  全片响度归一：测量整段视频的响度并按需统一增益，拉齐 B 站连播音量（投稿 / 多P / 番剧影视）。不压缩原声、不干预播放器。
-// @author       moxia
+// @author       Moxia9527
 // @license      MIT
 // @homepageURL  https://github.com/ADMA200/Bilibili_LoudNorm
 // @supportURL   https://github.com/ADMA200/Bilibili_LoudNorm/issues

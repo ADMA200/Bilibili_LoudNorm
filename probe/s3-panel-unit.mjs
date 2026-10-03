@@ -52,7 +52,7 @@ function testCssInvariants() {
     check('position:fixed 带 !important', d.some(x => /^position\s*:\s*fixed\s*!important$/.test(x)));
     check('z-index 取 32 位上限', d.some(x => /^z-index\s*:\s*2147483647\s*!important$/.test(x)));
     check('钉在左侧边（left:0）', d.some(x => /^left\s*:\s*0$/.test(x)));
-    /* S3.2.3：按钮列**中点**锚在视口 1/3 高度（moxia：「按钮太高了」）。
+    /* S3.2.3：按钮列**中点**锚在视口 1/3 高度。
      * 宿主顶边钉 33.333vh，.btns 再上移自身半高 → 列中点 = 33.333vh。 */
     check('★ 按钮列中点锚在视口 1/3（top:33.333vh）',
       d.some(x => /^top\s*:\s*33\.333vh$/.test(x)), d.join(' | '));
@@ -757,7 +757,7 @@ function testFullscreen() {
     check('★ 退出全屏后恢复可见', h.Panel.info().hiddenByFullscreen === false);
   }
 
-  /* --- 3a2. 真机取证回归（2026-10-03，moxia Edge 实录） ---
+  /* --- 3a2. 真机取证回归（2026-10-03） ---
    * 网页全屏（按 w）时只有 **body** 多出两个类：webscreen-fix / player-mode-web；
    * html 与 .bpx-player-container 的 class **完全不变**（实测）。
    * 命中靠的是 `webscreen-fix`（正则里的 web-?screen 覆盖 webscreen）。 */

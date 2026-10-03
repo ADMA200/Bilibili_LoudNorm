@@ -92,4 +92,4 @@ Bilibili Evolved（MIT）；响度算法依 ITU-R BS.1770-4 / EBU R128。
 
 ## 许可证
 
-[MIT](LICENSE) © moxia
+[MIT](LICENSE) © Moxia9527

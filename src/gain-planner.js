@@ -66,7 +66,7 @@ const GainPlanner = (() => {
          *   · 已过峰  → `+0 dB（素材已过峰）`   ← 提到 0，即「一点都不提」
          * 真峰值没丢：console.table 有独立的「真峰值dBTP」列，日志里紧跟「实测 → 目标」。
          * 〔格式〕数值与单位之间**一律一个空格**（`+1.7 dB` / `+0 dB` / `+6 dB` / `-60 dB`），
-         * 与面板其它 dB 读数（panel.js 的 fmt）保持一致 —— moxia要求。 */
+         * 与面板其它 dB 读数（panel.js 的 fmt）保持一致。 */
         limitReason = ceilingHeadroom < 0
           ? '+0 dB（素材已过峰）'
           : `+${ceilingHeadroom.toFixed(1)} dB（防止爆音）`;
