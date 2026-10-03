@@ -2,7 +2,7 @@
 // @name         B站响度归一
 // @name:en      Bilibili_LoudNorm
 // @namespace    https://github.com/ADMA200/Bilibili_LoudNorm
-// @version      1.0.0
+// @version      1.1.0
 // @description  全片响度归一：测量整段视频的响度并按需统一增益，拉齐 B 站连播音量（投稿 / 多P / 番剧影视）。不压缩原声、不干预播放器。
 // @description:en Normalizes the loudness of a whole video with a single gain, so consecutive Bilibili videos play at a consistent volume. No compression, no player interference.
 // @author       Moxia9527
@@ -41,14 +41,21 @@
  * 单一来源：build.mjs 从这里提取版本号写进 UserScript header。
  * ================================================================ */
 const CONFIG = {
-  version: '1.0.0',
-  stage: 'S3.2.8',   // S3.2.8 = 公开发布整理（仓库 / 许可证 / 脚本头与版号 / 文档脱敏），零功能逻辑改动
+  version: '1.1.0',
+  stage: 'S3.3.0',   // S3.3.0 = 状态面板加「重新测量本视频」；油猴菜单去掉四个调试入口
 
   /** 总开关 */
   enabled: true,
 
-  /** 调试日志开关（可用菜单命令切换） */
-  debug: true,
+  /**
+   * 调试日志：**默认关闭**（S3.3.0 起）。
+   *
+   * 只控制 `Log.debug()`（内部细节行）；`Log.info / warn / error` 不受影响。
+   * 原先默认开、靠油猴菜单的调试日志开关去关 —— S3.3.0 把那四个调试菜单项删了，
+   * 用户就没有关它的入口了，于是默认值一并改为 false，保持「开箱即静」。
+   * 需要时控制台：`__biliLoudness.setDebug(true)`。
+   */
+  debug: false,
 
   /**
    * 调试 HUD：**默认关闭**（S3.2.1 起）。
@@ -58,7 +65,7 @@ const CONFIG = {
    * 而且常驻在左下角挡视线。
    *
    * 关掉不影响：`Hud.toast()` 是独立宿主，旁路提示 / 清缓存反馈照常显示。
-   * 需要时用油猴菜单「开关调试 HUD」或 `__biliLoudness.hud(true)` 临时打开。
+   * 需要时控制台 `__biliLoudness.hud(true)` 临时打开（S3.3.0 起油猴菜单里不再有这个开关）。
    */
   hud: false,
 
@@ -2987,9 +2994,17 @@ const Hud = (() => {
  * 两个面板（S3.2.3 起宽度 176px，文案一律精简）：
  *   ① 当前状态 —— 悬停按钮即显示「增益 / 实测响度」；
  *      展开后上部是「功能开关态 / 采样完成状态 / 增益来源」，
- *      下部是「旁路（听原声）」按钮。
+ *      下部是「旁路（听原声）」与「重新测量本视频」两个按钮 +
+ *      各自一句说明（**重新测量**是 S3.3.0 加的，见下）。
  *   ② 设置 —— 功能开关 / 预设 / 目标响度滑块 / 增益上下限滑块 /
  *      缓存说明 / 清除缓存。
+ *
+ * S3.3.0（一条）：
+ *   · **「重新测量本视频」从调试接口升为正式按钮**。原来重测只有两条路：
+ *     控制台敲 `__biliLoudness.reanalyze()`，或点「清除缓存」把整库（800 条）清空。
+ *     现在只丢**本视频那一条**缓存再重跑 —— 网络抖动导致某次抽样偏少时，
+ *     用户自己就能修，不必动整库。
+ *     逻辑复用 `Analyzer.reanalyze()`（早已存在且被测试覆盖），此处只是接线。
  *
  * 尺寸与位置（S3.2.1 对齐 Evolved 的 `.be-settings > .sidebar`；S3.2.3 调纵向锚点）：
  *   · 按钮直径 **42px** = 26px 内容 + 8px padding × 2（Evolved 用
@@ -3433,6 +3448,22 @@ const Panel = (() => {
      * 讲的是「不影响数据」，反倒没讲「点了会怎样」）。 */
     const note = el('div', 'note', '暂停音频归一，播放原始音频。');
     bottom.appendChild(note);
+
+    /* 〔S3.3.0〕重新测量本视频 —— 原来只有 Analyzer.reanalyze() 这个「调试用」接口，
+     * 用户想重测只能开控制台敲 __biliLoudness.reanalyze()，或点「清除缓存」把整库清空。
+     * 接成按钮后，代价降到「只丢本视频这一条」。 */
+    bottom.appendChild(el('div', 'hr'));
+    S.remeasure = el('button', 'btn', '重新测量本视频');
+    S.remeasure.addEventListener('click', () => {
+      /* 进度看「采样」那一行（render 会跟着 phase 走），这里只负责即时反馈 */
+      Hud.toast('重新测量中…');
+      Analyzer.reanalyze().then(r => {
+        if (!r || !r.ok) Hud.toast('没有可测量的视频');
+      });
+    });
+    bottom.appendChild(S.remeasure);
+    bottom.appendChild(el('div', 'note', '丢弃本视频已保存的测量结果，重新测一遍。'));
+
     el0.appendChild(bottom);
   }
 
@@ -5076,19 +5107,11 @@ const Main = (() => {
       GM_registerMenuCommand(`旁路开关（对比原声 ${hotkeyText()}）`, () => {
         toggleBypass();
       });
-      GM_registerMenuCommand('开关调试 HUD', () => {
-        Hud.setEnabled(!Hud.isEnabled());
-      });
-      GM_registerMenuCommand('切换调试日志', () => {
-        Log.setDebug(!Log.isDebug());
-        Log.info('调试日志已' + (Log.isDebug() ? '开启' : '关闭'));
-      });
-      GM_registerMenuCommand('打印状态到控制台', () => {
-        console.log('[响度归一] 状态', buildStatus());
-      });
-      GM_registerMenuCommand('导出最近日志', () => {
-        console.table(Log.ring());
-      });
+      /* 〔S3.3.0〕菜单只留用户真的会用的三件事。原先还挂着四个调试入口
+       * （HUD 开关 / 调试日志开关 / 打印状态 / 导出日志），对普通用户是纯噪声；
+       * 那几个能力仍在控制台接口上：
+       *   __biliLoudness.hud(true) / .setDebug(true) / .status() / .logs()
+       * ⚠️ probe/s3-panel-unit.mjs 有断言守着这个菜单的**条数与内容**，改这里要同步改它。 */
       GM_registerMenuCommand('清空测量缓存', () => {
         Store.clear();
       });

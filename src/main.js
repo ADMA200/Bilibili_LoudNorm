@@ -81,19 +81,11 @@ const Main = (() => {
       GM_registerMenuCommand(`旁路开关（对比原声 ${hotkeyText()}）`, () => {
         toggleBypass();
       });
-      GM_registerMenuCommand('开关调试 HUD', () => {
-        Hud.setEnabled(!Hud.isEnabled());
-      });
-      GM_registerMenuCommand('切换调试日志', () => {
-        Log.setDebug(!Log.isDebug());
-        Log.info('调试日志已' + (Log.isDebug() ? '开启' : '关闭'));
-      });
-      GM_registerMenuCommand('打印状态到控制台', () => {
-        console.log('[响度归一] 状态', buildStatus());
-      });
-      GM_registerMenuCommand('导出最近日志', () => {
-        console.table(Log.ring());
-      });
+      /* 〔S3.3.0〕菜单只留用户真的会用的三件事。原先还挂着四个调试入口
+       * （HUD 开关 / 调试日志开关 / 打印状态 / 导出日志），对普通用户是纯噪声；
+       * 那几个能力仍在控制台接口上：
+       *   __biliLoudness.hud(true) / .setDebug(true) / .status() / .logs()
+       * ⚠️ probe/s3-panel-unit.mjs 有断言守着这个菜单的**条数与内容**，改这里要同步改它。 */
       GM_registerMenuCommand('清空测量缓存', () => {
         Store.clear();
       });

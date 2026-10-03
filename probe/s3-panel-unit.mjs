@@ -322,7 +322,7 @@ function makeDom() {
 function loadPanel(CONFIG, dom, opts) {
   opts = opts || {};
   const { document, timers, win } = dom;
-  const calls = { reapply: 0, setEnabled: [], toggleBypass: 0, toasts: [], cleared: 0 };
+  const calls = { reapply: 0, setEnabled: [], toggleBypass: 0, toasts: [], cleared: 0, reanalyze: 0 };
   let SETTINGS = opts.settings || {};
   let SNAP = Object.assign({
     phase: 'active', source: 'meta', measuredLufs: -23.8, targetLufs: -14,
@@ -344,6 +344,11 @@ function loadPanel(CONFIG, dom, opts) {
     isEnabled: () => !!CONFIG.enabled,
     toggleBypass: () => { calls.toggleBypass++; SNAP.bypass = !SNAP.bypass; return SNAP.bypass; },
     isBypass: () => !!SNAP.bypass,
+    /* 〔S3.3.0〕状态面板的「重新测量本视频」按钮调它；opts.reanalyzeOk === false 模拟「页面上没视频」 */
+    reanalyze: () => {
+      calls.reanalyze++;
+      return Promise.resolve(opts.reanalyzeOk === false ? { ok: false, reason: 'no-video' } : { ok: true });
+    },
   };
   const Store = {
     getSettings: () => Object.assign({}, SETTINGS),
@@ -511,6 +516,30 @@ function testInteraction() {
   bypassBtn.click();
   check('再点一次恢复（文案不再含「关闭」）',
     /旁路/.test(bypassBtn.textContent) && !/关闭/.test(bypassBtn.textContent), bypassBtn.textContent);
+
+  /* --- 〔S3.3.0〕状态面板第二个按钮：重新测量本视频 --- */
+  const stBtns = allByTag(pnlStatus, 'button');
+  check('★ S3.3.0：状态面板下方共两个按钮（旁路 + 重新测量）', stBtns.length === 2, String(stBtns.length));
+  check('★ S3.3.0：第一个仍是「旁路（听原声）」（旧位置不变，用户肌肉记忆不被打乱）',
+    /旁路/.test(stBtns[0].textContent), stBtns[0] && stBtns[0].textContent);
+  const remeasureBtn = stBtns[1];
+  check('★ S3.3.0：第二个是「重新测量本视频」',
+    !!remeasureBtn && /重新测量本视频/.test(remeasureBtn.textContent), remeasureBtn && remeasureBtn.textContent);
+  check('★ S3.3.0：说清丢的是「本视频」的结果（不是整库）',
+    /丢弃本视频已保存的测量结果/.test(pnlStatus.textContent), pnlStatus.textContent);
+  check('★ S3.3.0：两个按钮之间有分隔线（防止误点清库那类操作）',
+    allByTag(pnlStatus, 'div').filter(e => e.classList && e.classList.contains('hr')).length >= 1,
+    String(allByTag(pnlStatus, 'div').filter(e => e.classList.contains('hr')).length));
+
+  const toastBefore = h.calls.toasts.length;
+  remeasureBtn.click();
+  check('★ S3.3.0：点「重新测量本视频」→ 调 Analyzer.reanalyze()', h.calls.reanalyze === 1);
+  check('★ S3.3.0：点击立即给 toast「重新测量中…」（不等 Promise 回来）',
+    h.calls.toasts.slice(toastBefore).some(t => /重新测量中/.test(t)),
+    JSON.stringify(h.calls.toasts.slice(toastBefore)));
+  /* 失败分支（页面上没视频）只做源码级断言 —— 它挂在 .then() 里，同步测不到 */
+  check('★ S3.3.0：reanalyze 失败时提示「没有可测量的视频」',
+    /if\s*\(!r\s*\|\|\s*!r\.ok\)\s*Hud\.toast\('没有可测量的视频'\)/.test(read('src/panel.js')));
 
   /* --- 互斥与收起 --- */
   btnSettings.click();
@@ -883,7 +912,25 @@ function testWiring() {
     /if\s*\(CONFIG\.hud\)\s*Hud\.update\(/.test(main));
   check('★ toast 与常驻浮层解耦（关 HUD 不影响旁路 / 清缓存提示）',
     /function toast\s*\(/.test(read('src/hud.js')) && /toastHost/.test(read('src/hud.js')));
-  check('油猴菜单仍留「开关调试 HUD」（调试时可按需打开）', /开关调试 HUD/.test(main));
+  /* --- 〔S3.3.0〕油猴菜单瘦身：只留用户真会用的三项 --- */
+  check('★ S3.3.0：菜单保留「开关响度归一 / 旁路开关 / 清空测量缓存」',
+    /开关响度归一/.test(main) && /旁路开关/.test(main) && /清空测量缓存/.test(main));
+  /* 断言前先剥注释：注释里出现「某个菜单项已移除」这类**说明性**文字是合法的，
+   * 不该被当成「菜单里还有它」。真正要守的是「没有把这些命令注册进去」。 */
+  const mainCode = main.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+  check('★ S3.3.0：四个调试入口已从菜单移除（开关调试 HUD / 切换调试日志 / 打印状态 / 导出日志）',
+    !/开关调试 HUD/.test(mainCode) && !/切换调试日志/.test(mainCode)
+    && !/打印状态到控制台/.test(mainCode) && !/导出最近日志/.test(mainCode),
+    mainCode.split('\n').filter(l => /调试 HUD|调试日志|打印状态|导出最近日志/.test(l)).join(' | '));
+  check('★ S3.3.0：菜单项恰好 3 条（日后想加回来，这条会先拦下来）',
+    (main.match(/GM_registerMenuCommand\(/g) || []).length === 3,
+    String((main.match(/GM_registerMenuCommand\(/g) || []).length));
+  check('★ S3.3.0：调试能力仍留在控制台接口上（hud / setDebug / status / logs）',
+    /hud:\s*\(v\)\s*=>/.test(main) && /setDebug:\s*\(v\)\s*=>/.test(main)
+    && /status:\s*buildStatus/.test(main) && /logs:\s*\(\)\s*=>\s*Log\.ring\(\)/.test(main));
+  /* 菜单入口没了，debug 若仍默认开，用户就没有关它的办法了 */
+  check('★ S3.3.0：CONFIG.debug 默认关闭（菜单入口一并移除，不能留个关不掉的开关）',
+    /debug:\s*false/.test(cfg));
   check('三组滑块范围都在配置里',
     /targetRange:/.test(cfg) && /maxBoostRange:/.test(cfg) && /minGainRange:/.test(cfg));
   check('profiles 增加 custom 档', /custom:\s*\{\s*label:\s*'自定义'/.test(cfg));
@@ -898,7 +945,7 @@ function testWiring() {
 
   const dist = read('Bilibili_LoudNorm.user.js');
   check('★ 构建产物里含 Panel 模块', /const Panel = \(\(\) => \{/.test(dist));
-  check('构建产物版本 v1.0.0', /@version\s+1\.0\.0/.test(dist));
+  check('构建产物版本 v1.1.0', /@version\s+1\.1\.0/.test(dist));
   check('构建产物铁律：无 alert', !/(?<![.\w])alert\s*\(/.test(dist.replace(/\/\*[\s\S]*?\*\//g, '')));
 }
 

@@ -23,9 +23,17 @@
  * 两个面板（S3.2.3 起宽度 176px，文案一律精简）：
  *   ① 当前状态 —— 悬停按钮即显示「增益 / 实测响度」；
  *      展开后上部是「功能开关态 / 采样完成状态 / 增益来源」，
- *      下部是「旁路（听原声）」按钮。
+ *      下部是「旁路（听原声）」与「重新测量本视频」两个按钮 +
+ *      各自一句说明（**重新测量**是 S3.3.0 加的，见下）。
  *   ② 设置 —— 功能开关 / 预设 / 目标响度滑块 / 增益上下限滑块 /
  *      缓存说明 / 清除缓存。
+ *
+ * S3.3.0（一条）：
+ *   · **「重新测量本视频」从调试接口升为正式按钮**。原来重测只有两条路：
+ *     控制台敲 `__biliLoudness.reanalyze()`，或点「清除缓存」把整库（800 条）清空。
+ *     现在只丢**本视频那一条**缓存再重跑 —— 网络抖动导致某次抽样偏少时，
+ *     用户自己就能修，不必动整库。
+ *     逻辑复用 `Analyzer.reanalyze()`（早已存在且被测试覆盖），此处只是接线。
  *
  * 尺寸与位置（S3.2.1 对齐 Evolved 的 `.be-settings > .sidebar`；S3.2.3 调纵向锚点）：
  *   · 按钮直径 **42px** = 26px 内容 + 8px padding × 2（Evolved 用
@@ -469,6 +477,22 @@ const Panel = (() => {
      * 讲的是「不影响数据」，反倒没讲「点了会怎样」）。 */
     const note = el('div', 'note', '暂停音频归一，播放原始音频。');
     bottom.appendChild(note);
+
+    /* 〔S3.3.0〕重新测量本视频 —— 原来只有 Analyzer.reanalyze() 这个「调试用」接口，
+     * 用户想重测只能开控制台敲 __biliLoudness.reanalyze()，或点「清除缓存」把整库清空。
+     * 接成按钮后，代价降到「只丢本视频这一条」。 */
+    bottom.appendChild(el('div', 'hr'));
+    S.remeasure = el('button', 'btn', '重新测量本视频');
+    S.remeasure.addEventListener('click', () => {
+      /* 进度看「采样」那一行（render 会跟着 phase 走），这里只负责即时反馈 */
+      Hud.toast('重新测量中…');
+      Analyzer.reanalyze().then(r => {
+        if (!r || !r.ok) Hud.toast('没有可测量的视频');
+      });
+    });
+    bottom.appendChild(S.remeasure);
+    bottom.appendChild(el('div', 'note', '丢弃本视频已保存的测量结果，重新测一遍。'));
+
     el0.appendChild(bottom);
   }
 
