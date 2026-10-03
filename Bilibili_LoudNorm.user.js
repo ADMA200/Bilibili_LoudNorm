@@ -4,6 +4,7 @@
 // @namespace    https://github.com/ADMA200/Bilibili_LoudNorm
 // @version      1.0.0
 // @description  全片响度归一：测量整段视频的响度并按需统一增益，拉齐 B 站连播音量（投稿 / 多P / 番剧影视）。不压缩原声、不干预播放器。
+// @description:en Normalizes the loudness of a whole video with a single gain, so consecutive Bilibili videos play at a consistent volume. No compression, no player interference.
 // @author       Moxia9527
 // @license      MIT
 // @homepageURL  https://github.com/ADMA200/Bilibili_LoudNorm
