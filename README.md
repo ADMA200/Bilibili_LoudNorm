@@ -10,9 +10,13 @@ B 站自己的「音量均衡」是**默认关闭**的，而且只覆盖**带响
 ## 安装
 
 1. 浏览器装 [Tampermonkey](https://www.tampermonkey.net/)（或同类用户脚本管理器）
-2. 安装脚本：
-   - **GreasyFork**：待上架（上架后从这里装可自动更新）
-   - **GitHub**：打开 `Bilibili_LoudNorm.user.js`，用 Tampermonkey 的「安装」安装
+2. 安装脚本 —— 二选一：
+
+   | 来源 | 链接 | 自动更新 |
+   |---|---|---|
+   | **GreasyFork（推荐）** | [B站响度归一](https://greasyfork.org/zh-CN/scripts/598598) | ✅ 发新版自动推送 |
+   | GitHub | [`Bilibili_LoudNorm.user.js`](https://raw.githubusercontent.com/ADMA200/Bilibili_LoudNorm/main/Bilibili_LoudNorm.user.js) | ❌ 需手动重装 |
+
 3. 打开任意 B 站视频即可，无需任何设置
 
 ## 它做什么
