@@ -1,5 +1,9 @@
 # ---- 本地开发产物，不随仓库发布 ----
 
+# 开发版产物：源码注释全留，仅供本地调试安装。
+# 仓库里已有 src/ 全文 + build.mjs，随时 node build.mjs 可再生成，不必重复存一份 213KB。
+/Bilibili_LoudNorm.dev.user.js
+
 # 第三方参考脚本（MPL-2.0），仅本地只读对照 —— 散布他人代码会构成许可风险
 /reference/
 
@@ -8,7 +12,8 @@
 
 # 端到端与一次性探测脚本：依赖本机 headless 浏览器 + 已登录 B 站 profile，
 # 他人 clone 后无法复现，故不随仓库发布。
-# 公开的只有 5 个纯 Node 单元套件：s2-unit / s3-unit / s3-pgc-unit / s3-panel-unit / store-unit
+# 公开的只有 6 个纯 Node 单元套件：s2-unit / s3-unit / s3-pgc-unit / s3-panel-unit /
+# store-unit / build-strip-unit
 /probe/bl_*
 /probe/s1-*
 /probe/s2-hud-verify.mjs

@@ -67,19 +67,33 @@ B 站自己的「音量均衡」是**默认关闭**的，而且只覆盖**带响
 ## 开发
 
 ```bash
-node build.mjs      # 把 src/ 拼成单文件产物 + 铁律守卫
+node build.mjs      # 拼装 src/ → 两个产物 + 语法自检 + 铁律守卫
 ```
 
 源码 15 个模块，**零第三方依赖**，只用 Node 内置模块。改代码改 `src/`，然后重新构建。
 
+构建产出**两个文件**：
+
+| 文件 | 用途 | 注释 | 体积 |
+|---|---|---|---|
+| `Bilibili_LoudNorm.user.js` | **发布版** —— 上传 GitHub / GreasyFork | 只留说明代码功能的注释 | ≈ 146 KB |
+| `Bilibili_LoudNorm.dev.user.js` | 开发版 —— 本地调试安装 | 源码注释全留 + 模块分隔标题 | ≈ 213 KB |
+
+两者的 `@name` 与 `@namespace` 不同 —— 油猴按「名字 + 命名空间」认脚本，
+所以两个可以同时装，互不覆盖、也不会互相更新。开发版不随仓库发布（见 `.gitignore`），
+需要时 `node build.mjs` 随时生成。
+
+注释怎么剥、哪些留：见 [`strip-comments.mjs`](strip-comments.mjs)。
+
 ### 测试
 
 ```bash
-node probe/s2-unit.mjs        # 105 项
-node probe/s3-unit.mjs        #  31 项
-node probe/s3-pgc-unit.mjs    #  70 项
-node probe/s3-panel-unit.mjs  # 203 项
-node probe/store-unit.mjs     #  44 项
+node probe/s2-unit.mjs          # 105 项
+node probe/s3-unit.mjs          #  31 项
+node probe/s3-pgc-unit.mjs      #  70 项
+node probe/s3-panel-unit.mjs    # 204 项
+node probe/store-unit.mjs       #  44 项
+node probe/build-strip-unit.mjs #  66 项
 ```
 
 单元套件是**纯 Node、零依赖**，clone 下来直接能跑。端到端套件需要已登录的 B 站浏览器 profile，
@@ -87,6 +101,7 @@ node probe/store-unit.mjs     #  44 项
 
 > 构建时会跑一道**铁律守卫**：扫描产物里有没有 `pause()` / `preventDefault()` / `alert()` /
 > 无参 `disconnect()` —— 这几类调用会干预播放器。命中即构建失败。
+> 之后还会用 `node --check` 真实解析一遍产物，确认剥离注释没弄坏代码。
 
 ## 文档
 

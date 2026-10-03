@@ -945,8 +945,10 @@ function testWiring() {
 
   const dist = read('Bilibili_LoudNorm.user.js');
   check('★ 构建产物里含 Panel 模块', /const Panel = \(\(\) => \{/.test(dist));
-  check('构建产物版本 v1.1.0', /@version\s+1\.1\.0/.test(dist));
+  check('构建产物版本 v1.1.1', /@version\s+1\.1\.1/.test(dist));
   check('构建产物铁律：无 alert', !/(?<![.\w])alert\s*\(/.test(dist.replace(/\/\*[\s\S]*?\*\//g, '')));
+  check('★ S3.3.1：发布版不再内联模块分隔标题（那是开发版的事）',
+    !/^\/\* ---- [a-z-]+\.js ---- \*\/$/m.test(dist));
 }
 
 /* ================================================================ */
