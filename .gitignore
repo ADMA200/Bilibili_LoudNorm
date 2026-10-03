@@ -1,0 +1,31 @@
+# ---- 本地开发产物，不随仓库发布 ----
+
+# 第三方参考脚本（MPL-2.0），仅本地只读对照 —— 散布他人代码会构成许可风险
+/reference/
+
+# 实测原始输出：含真实账号指纹（B 站 UID / 设备指纹），绝不公开
+/probe/raw/
+
+# 端到端与一次性探测脚本：依赖本机 headless 浏览器 + 已登录 B 站 profile，
+# 他人 clone 后无法复现，故不随仓库发布。
+# 公开的只有 5 个纯 Node 单元套件：s2-unit / s3-unit / s3-pgc-unit / s3-panel-unit / store-unit
+/probe/bl_*
+/probe/s1-*
+/probe/s2-hud-verify.mjs
+/probe/s2-timing.mjs
+/probe/s2-verify.mjs
+/probe/s3-fullscreen-probe.mjs
+/probe/s3-nav-*
+/probe/s3-panel-verify.mjs
+/probe/s3-pgc-api-shape.mjs
+/probe/s3-pgc-control.mjs
+/probe/s3-pgc-lufs.mjs
+/probe/s3-pgc-probe.mjs
+/probe/s3-pgc-verify.mjs
+/probe/s3-ui-probe.mjs
+
+# ---- 系统 / 编辑器 ----
+.DS_Store
+*.log
+.workbuddy/
+node_modules/
