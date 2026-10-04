@@ -539,7 +539,9 @@ function testInteraction() {
     JSON.stringify(h.calls.toasts.slice(toastBefore)));
   /* 失败分支（页面上没视频）只做源码级断言 —— 它挂在 .then() 里，同步测不到 */
   check('★ S3.3.0：reanalyze 失败时提示「没有可测量的视频」',
-    /if\s*\(!r\s*\|\|\s*!r\.ok\)\s*Hud\.toast\('没有可测量的视频'\)/.test(read('src/panel.js')));
+    /: '没有可测量的视频'\)/.test(read('src/panel.js')));
+  check('★ S3.3.2：停用状态下点重测另有提示 —— 不报成「没有可测量的视频」误导人',
+    /r && r\.reason === 'disabled' \? '响度归一当前是关闭的' : '没有可测量的视频'/.test(read('src/panel.js')));
 
   /* --- 互斥与收起 --- */
   btnSettings.click();
@@ -945,7 +947,11 @@ function testWiring() {
 
   const dist = read('Bilibili_LoudNorm.user.js');
   check('★ 构建产物里含 Panel 模块', /const Panel = \(\(\) => \{/.test(dist));
-  check('构建产物版本 v1.1.1', /@version\s+1\.1\.1/.test(dist));
+  // 版本号的唯一来源是 src/config.js，这里只校验两者同步，不硬编码
+  // （硬编码的结果是每升一次版本就得回来改一行套件）
+  const relVer = (read('src/config.js').match(/version:\s*'([^']+)'/) || [])[1];
+  check(`构建产物版本与 src/config.js 一致（v${relVer}）`,
+    new RegExp('@version\\s+' + String(relVer).replace(/\./g, '\\.')).test(dist), relVer);
   check('构建产物铁律：无 alert', !/(?<![.\w])alert\s*\(/.test(dist.replace(/\/\*[\s\S]*?\*\//g, '')));
   check('★ S3.3.1：发布版不再内联模块分隔标题（那是开发版的事）',
     !/^\/\* ---- [a-z-]+\.js ---- \*\/$/m.test(dist));

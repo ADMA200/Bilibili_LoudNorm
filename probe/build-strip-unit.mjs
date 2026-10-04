@@ -2,24 +2,26 @@
 /* ================================================================
  * build-strip-unit.mjs — 构建拆分（发布版 / 开发版）与注释剥离的单元验证
  *
- * build.mjs 现在产出两个文件：
- *   Bilibili_LoudNorm.user.js       发布版（上传用，注释精简）
+ * build.mjs 产出两个文件：
+ *   Bilibili_LoudNorm.user.js       发布版（上传用，**零注释**）
  *   Bilibili_LoudNorm.dev.user.js   开发版（本地调试，注释全留）
  *
- * 这里要钉死的是**「剥离只动了注释，没动代码」** —— 这是整个拆分的前提。
- * 注释剥离是逐字符扫描实现的（见 strip-comments.mjs），一旦判断错
- * 「`/` 是除号还是正则开头」，就会把**一整行真实代码**当成注释删掉，
- * 而语法还可能是合法的 —— 靠人眼看产物发现不了。所以断言分三层：
- *   ① 骨架比对：两版把注释全剥掉后，代码必须逐字一致
- *   ② 定点比对：src 里所有含转义斜杠（正则）的代码行必须原样出现在产物里
- *   ③ 语法自检：node --check 真实解析一遍
+ * 这里要钉死的两件事：
+ *   ① **「剥注释只动了注释，没动代码」** —— 这是整个拆分的前提。
+ *      剥离是逐字符扫描实现的（见 strip-comments.mjs），一旦判断错
+ *      「`/` 是除号还是正则开头」，就会把**一整行真实代码**当成注释删掉，
+ *      而语法还可能是合法的 —— 靠人眼看产物发现不了。
+ *      断言分三层：骨架比对 + 含正则代码行定点比对 + `node --check`。
+ *   ② **「交付产物一个注释都不许有」**（S3.3.4 起的约定）——
+ *      同时**元数据块必须完好**：那是可上传性的命根子（GreasyFork 靠它校验），
+ *      剥注释剥到它就等于把脚本废了，所以两边都要钉。
  * ================================================================ */
 
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { stripComments, keepComment, literals, comments } from '../strip-comments.mjs';
+import { stripComments, literals, comments, codeSkeleton } from '../strip-comments.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (p) => readFileSync(join(ROOT, p), 'utf8');
@@ -29,6 +31,24 @@ const DEV = 'Bilibili_LoudNorm.dev.user.js';
 const MODULES = ['config.js', 'logger.js', 'store.js', 'sidx.js', 'loudness.js',
   'gain-planner.js', 'state-reader.js', 'playinfo.js', 'sampler.js',
   'audio-engine.js', 'hud.js', 'panel.js', 'analyzer.js', 'lifecycle.js', 'main.js'];
+
+/** 发布版的 UserScript 元数据块 —— 不是注释，剥了脚本就废了 */
+const META_KEYS = ['@name', '@name:en', '@namespace', '@version', '@description',
+  '@author', '@license', '@homepageURL', '@match', '@grant', '@run-at', '@noframes'];
+
+/**
+ * 这些字眼不该进交付产物。
+ * ⚠️ 不列 `__biliLoudness`（那是**功能**：挂到 window 的控制台接口，
+ *    S3.3.0 删掉油猴菜单入口时刻意保留的能力）也不列 `S3.x.x`
+ *    （`CONFIG.stage` 是 HUD 上要给用户看的字段）—— 两者另有正向断言单独钉。
+ */
+const DEV_LEAK = [
+  ['内部问题编号 〔〕', /〔/],
+  ['构建说明', /构建产物|请勿直接编辑|node build\.mjs/],
+  ['个人署名 moxia（小写）', /moxia/],
+  ['模块分隔标题', /---- \w+\.js ----/],
+  ['注释腔调（调试用 / 自检 / 供验证脚本）', /调试用|自检接口|供验证脚本/],
+];
 
 let pass = 0;
 let fail = 0;
@@ -42,6 +62,11 @@ const release = read(REL);
 const dev = read(DEV);
 const kb = (s) => Buffer.byteLength(s, 'utf8') / 1024;
 
+/** 代码体起点：`(function () {` 之前是元数据区，之后是唯一该被剥的地方 */
+const codeStart = release.indexOf('(function () {');
+const head = codeStart > 0 ? release.slice(0, codeStart) : '';
+const body = codeStart > 0 ? release.slice(codeStart) : '';
+
 /* --------------------------- 1. 体积 --------------------------- */
 function testSize() {
   section('体积');
@@ -51,61 +76,74 @@ function testSize() {
   check('★ 发布版比开发版小 ≥ 20%',
     kb(release) / kb(dev) <= 0.80,
     (kb(release) / kb(dev) * 100).toFixed(1) + '%');
-  check('发布版行数 ≤ 4600', release.split('\n').length <= 4600, release.split('\n').length);
+  check('发布版总行数 ≤ 4600', release.split('\n').length <= 4600, release.split('\n').length);
+  // 体积红利：注释全剥后应比「只留功能注释」的时代再瘦一截（旧值 149 KB）
+  check('★ 零注释红利：发布版 < 140 KB（较保留功能注释时代再瘦 ~15 KB）',
+    kb(release) < 140, kb(release).toFixed(1) + ' KB');
 }
 
-/* --------------------- 2. 注释策略（该丢的丢了） --------------------- */
-function testStripped() {
-  section('注释策略');
+/* ------------------- 2. 零注释策略（S3.3.4） ------------------- */
+function testNoComments() {
+  section('零注释策略');
+  check('发布版有代码体起点 `(function () {`', codeStart > 0, codeStart);
+  if (codeStart <= 0) return;
 
-  // 只取**注释文本**来查 —— 直接对整行做正则会把代码行也扫进来
-  // （例：`Log.debug('调试接口已挂到 …')` 是代码，不是注释）。
-  // 另：模板串（CSS 样式表）内的注释由剥离器直接丢弃，不在 comments() 里。
-  const commentText = comments(release)
-    .filter(t => !/^\/\/ @/.test(t))      // UserScript header 的元数据行不算注释
-    .join('\n');
+  /* ---- ① 代码体：一个注释都不许有 ---- */
+  const bodyComments = comments(body);
+  check('★ 发布版**代码体零注释**', bodyComments.length === 0,
+    bodyComments.slice(0, 3).map(t => t.slice(0, 60)).join(' | '));
+  // 交叉验证：换一把「不借扫描器」的尺子。只查代码体 ——
+  // 元数据区的 `@match …/video/*` 里天然含 `/*`，不能混进来。
+  check('★ 交叉验证：代码体内不含 `/*` 且无行首 `//`',
+    !body.includes('/*') && !/^\s*\/\//m.test(body),
+    (body.match(/^.*(\/\*|\s\/\/).*$/m) || [''])[0].slice(0, 80));
+  check('★ 发布版不含源码功能注释（如 `/** 总开关 */`）',
+    !release.includes('/** 总开关 */') && !release.includes('// 分析完成前保持原声'));
+  check('★ 发布版不含模块分隔标题（开发向，已清）',
+    MODULES.every(m => !release.includes(`/* ---- ${m} ---- */`)));
 
-  check('发布版有注释（不是全清空）', commentText.length > 2000, commentText.length);
+  /* ---- ② 元数据块：一个字段都不许少（可上传性） ---- */
+  const headLines = head.split('\n').filter(l => l.trim());
+  const stray = headLines.filter(l => !/^\/\/ (@|==)/.test(l.trim()));
+  check('★ 元数据区只有 `// @…` 与 `// ==…==`（没有夹带说明性注释）',
+    stray.length === 0, stray[0]?.slice(0, 80));
+  for (const key of META_KEYS) {
+    check(`元数据 ${key} 存在`, new RegExp(`^// ${key}\\b`, 'm').test(head));
+  }
+  check('★ 元数据块闭合（==UserScript== / ==/UserScript== 各一个）',
+    (head.match(/^\/\/ ==UserScript==$/m) || []).length === 1 &&
+    (head.match(/^\/\/ ==\/UserScript==$/m) || []).length === 1);
+  check('★ 元数据区之后紧接代码体（无文件头说明块）',
+    /\/\/ ==\/UserScript==\n\n\(function \(\) \{/.test(release.slice(0, 1300)),
+    JSON.stringify(release.slice(head.length - 30, head.length + 20)));
 
-  const GONE = [
-    ['版本演进标记 S3.x.x', /S\d\.\d/],
-    ['内部问题编号 〔〕', /〔/],
-    ['真机反馈', /真机/],
-    ['踩坑记录', /踩过/],
-    ['演进叙述', /演进/],
-    ['个人署名 moxia（小写）', /moxia/],
-    // ---- 开发向（S3.3.1 起清掉）----
-    ['调试接口', /调试用|调试\/诊断|自检|供验证|验证脚本|__biliLoudness/],
-    ['模块交叉引用', /见 [a-z-]+\.js|见 state-reader/],
-    ['并发 / 限流调参', /HTTP\/2|并发上限|-799|退避|防抖延迟/],
-    ['构建说明', /构建产物|请勿直接编辑/],
-  ];
-  for (const [name, re] of GONE) {
-    const hit = commentText.split('\n').filter(l => re.test(l));
-    check(`★ 发布版注释中无「${name}」`, hit.length === 0, hit[0]?.trim().slice(0, 80));
+  /* ---- ③ 开发向内容整体不得进产物（注释没了，字符串里也不许有） ---- */
+  for (const [name, re] of DEV_LEAK) {
+    const hit = release.split('\n').filter(l => re.test(l));
+    check(`★ 发布版（全文件）无「${name}」`, hit.length === 0, hit[0]?.trim().slice(0, 80));
   }
 
-  // 残留块注释不得有超过 3 行的（3 行以上 = 设计说明）
-  const blocks = comments(release).filter(t => t.startsWith('/*'));
-  const longOnes = blocks.filter(b => b.split('\n').length > 3);
-  check('★ 发布版无「超过 3 行」的块注释', longOnes.length === 0, longOnes[0]?.slice(0, 80));
+  // 阶段标记只许有一处：CONFIG.stage（HUD 要显示它）。
+  // 其余 S3.x.x 演进标记都是注释腔调，应随注释一起消失。
+  const stageLines = release.split('\n').filter(l => /S\d\.\d/.test(l));
+  check('★ 发布版仅 CONFIG.stage 一处 S3.x.x 标记（其余演进标记已随注释剥净）',
+    stageLines.length === 1 && /^\s*stage:/.test(stageLines[0]), stageLines.join(' | '));
 
-  const body = release.slice(release.indexOf('(function () {'));
-  const commentBytes = comments(body).reduce((s, b) => s + Buffer.byteLength(b, 'utf8'), 0);
-  check('★ 发布版注释占比 ≤ 15%',
-    commentBytes / Buffer.byteLength(body) <= 0.15,
-    (commentBytes / Buffer.byteLength(body) * 100).toFixed(1) + '%');
+  // 反向护栏：别把「功能」当注释一起清掉了
+  check('★ 交付产物保留控制台接口 __biliLoudness（S3.3.0 决定：菜单入口删掉，能力留控制台）',
+    /__biliLoudness\s*=\s*\{/.test(release));
+  check('★ 交付产物保留铁律相关的运行时判断（observer.disconnect 白名单那一处）',
+    /observer\s*\.\s*disconnect\s*\(\s*\)/.test(release));
 
-  check('★ 装饰性横幅已压成单行（无 20 连等号）', !/={20,}/.test(release));
-  check('保留功能注释：字段说明', release.includes('/** 总开关 */'));
-  check('保留功能注释：函数说明', /\/\*\* 均匀抽取 want 个段/.test(release));
-  check('保留行注释：功能说明', release.includes('// 分析完成前保持原声'));
-  check('保留行注释：危险提示', release.includes('// 铁律 3：ctx 不 running 就绝不接管'));
-
-  const mods = MODULES.filter(m => release.includes(`/* ---- ${m} ---- */`));
-  check('★ 发布版不含模块分隔标题（开发向，已清）', mods.length === 0, mods.join(', '));
-  check('★ 开发版保留 15 个模块分隔标题',
-    MODULES.every(m => dev.includes(`/* ---- ${m} ---- */`)));
+  /* ---- ④ 对照组：开发版必须留着注释，证明剥的是注释不是代码 ---- */
+  const devComments = comments(dev.slice(dev.indexOf('(function () {')));
+  check('★ 对照组：开发版代码体注释 > 300 条', devComments.length > 300, devComments.length);
+  check('★ 对照组：开发版保留设计史（S3.x.x）', /S\d\.\d/.test(dev));
+  check('★ 对照组：开发版保留踩坑复盘与模块分隔标题',
+    /踩过|演进/.test(dev) && /^\/\* ---- \w+\.js ---- \*\/$/m.test(dev));
+  check('★ 开发版比发布版多 8 万字节以上注释',
+    Buffer.byteLength(dev) - Buffer.byteLength(release) > 80000,
+    (Buffer.byteLength(dev) - Buffer.byteLength(release)) + ' B');
 
   // 剥离后仍要留下实质代码（防止整段被吃掉）
   const codeLines = body.split('\n').map(l => l.trim())
@@ -118,14 +156,13 @@ function testIntegrity() {
   section('代码完整性');
 
   // ① 骨架比对：注释全剥后，两版必须逐字一致
-  const skel = (s) => stripComments(s).replace(/\s+/g, ' ').trim();
-  const sDev = skel(dev), sRel = skel(release);
+  const sDev = codeSkeleton(dev), sRel = codeSkeleton(release);
   check('★ 两版「去掉全部注释 + 折叠空白」后逐字一致', sDev === sRel,
     sDev === sRel ? sDev.length : `${sDev.length} vs ${sRel.length}`);
 
   // ② 字面量多重集一致（字符串 / 模板串没被吃掉）
   const norm = (s) => literals(s).sort().join('\u0000');
-  check('★ 两版字符串字面量多重集一致', norm(skel(dev)) === norm(skel(release)));
+  check('★ 两版字符串字面量多重集一致', norm(sDev) === norm(sRel));
 
   // ③ 定点比对：src 里含转义斜杠的代码行（正则）必须原样出现在发布版
   const tricky = [];
@@ -140,6 +177,24 @@ function testIntegrity() {
   const lost = tricky.filter(([, t]) => !release.includes(t));
   check(`★ src 中 ${tricky.length} 行「含正则」的代码全部原样保留`, lost.length === 0,
     lost.map(([m, t]) => `${m}: ${t.slice(0, 60)}`).join(' | '));
+
+  // ③b 零注释后，src 里**全部**代码行都该原样出现在产物里（以前只能抽查正则行）。
+  //     先整文件剥注释再逐行比 —— 逐行剥会破坏跨行上下文（模板串、块注释）。
+  //     这条能抓到骨架比对抓不到的事：MODULES 列表若漏了某个 src 文件，
+  //     两版都由同一份列表生成、骨架当然一致，只有这里会发现「src 的行没进产物」。
+  const allLost = [];
+  let allTotal = 0;
+  for (const m of MODULES) {
+    for (const line of stripComments(read('src/' + m)).split('\n')) {
+      const t = line.trim();
+      if (!t) continue;
+      allTotal++;
+      if (!release.includes(t)) allLost.push(`${m}: ${t.slice(0, 70)}`);
+    }
+  }
+  check(`★ src 中全部 ${allTotal} 代码行逐行出现在发布版（零注释让这条可以全量查了）`,
+    allLost.length === 0,
+    `${allLost.length} 行缺失，例：${allLost.slice(0, 3).join(' | ')}`);
 
   // ④ 语法自检
   const r = spawnSync(process.execPath, ['--check', join(ROOT, REL)], { encoding: 'utf8' });
@@ -176,40 +231,28 @@ function testIdentity() {
   check('@name:en 存在时必须带 @description:en（GreasyFork 校验）',
     !/^\/\/ @name:en/m.test(release) || /^\/\/ @description:en\s+\S/m.test(release));
 
+  // 边界必须写在用户看得见的地方：装脚本时先看 @description，不是 README
+  // —— 零注释后这一点更关键：文件头注释没了，@description 成了唯一门面
+  check('★ 两版 @description 都写明「不含课程与直播」',
+    /不含课程与直播/.test(field(release, '@description') || '') &&
+    /不含课程与直播/.test(field(dev, '@description') || ''),
+    `rel…${(field(release, '@description') || '').slice(-12)} / dev…${(field(dev, '@description') || '').slice(-12)}`);
+  check('★ 两版 @description:en 都写明不支持直播',
+    /live streams are not supported/.test(field(release, '@description:en') || '') &&
+    /live streams are not supported/.test(field(dev, '@description:en') || ''));
+  check('★ 发布版 @description 长度 < 200 字符（零注释后 @description 是唯一门面，不能还塞成说明文档）',
+    (field(release, '@description') || '').length < 200,
+    (field(release, '@description') || '').length);
+
   const matchR = (release.match(/^\/\/ @match/gm) || []).length;
   check('两版 @match 条数一致', matchR === (dev.match(/^\/\/ @match/gm) || []).length, matchR);
-
-  // 开发版确实留住了设计注释
-  check('开发版保留设计史注释（S3.x.x）', /S\d\.\d/.test(dev));
-  check('开发版保留踩坑复盘', /踩过|演进/.test(dev));
-  check('开发版保留模块分隔标题', /^\/\* ---- \w+\.js ---- \*\/$/m.test(dev));
-  check('开发版比发布版多 6 万字节以上注释',
-    Buffer.byteLength(dev) - Buffer.byteLength(release) > 60000,
-    (Buffer.byteLength(dev) - Buffer.byteLength(release)) + ' B');
 }
 
 /* --------------------- 5. 剥离器自身的规则 --------------------- */
 function testStripper() {
   section('剥离器规则');
 
-  check('第 1 行注释（构建说明）保留', keepComment('/* x */'));
-  check('4 行块注释丢弃', !keepComment('/*\n * a\n * b\n * c\n */'));
-  check('含 S3.3.0 的注释丢弃', !keepComment('/* S3.3.0 改动 */'));
-  check('含「〔问题 5〕」的注释丢弃', !keepComment('/* 〔问题 5〕收起 */'));
-  check('纯分隔线丢弃', !keepComment('// ----------------'));
-  check('超长行注释丢弃', !keepComment('// ' + 'x'.repeat(200)));
-
-  // 开发向注释（S3.3.1）
-  check('★ 调试接口注释丢弃', !keepComment('/** 调试用：重置记忆 */'));
-  check('★ 自检接口注释丢弃', !keepComment('/** 自检：面板在不在 */'));
-  check('★ 验证脚本用注释丢弃', !keepComment('/** 供验证脚本单独调接口 */'));
-  check('★ 模块交叉引用丢弃', !keepComment('/* 改用 pgcFresh()（见 state-reader） */'));
-  check('★ 并发/限流调参说明丢弃', !keepComment('/** 并发上限（HTTP/2 多路复用） */'));
-  check('★ 模块分隔标题丢弃', !keepComment('/* ---- panel.js ---- */'));
-  check('★ 但关键警示即使含「并发」也保留',
-    keepComment('/* 铁律：并发放大时也绝不能 disconnect 音频链 */'));
-
-  // 正则 / 字符串不被误判成注释
+  // 上下文判定是剥离器的命门：判错 `/` 就会把一整行真代码当注释删掉
   const cases = [
     ["引号内的 //", "const u = 'https://a.com/x';", "const u = 'https://a.com/x';"],
     ['模板串内的 //', 'const u = `https://a.com`;', 'const u = `https://a.com`;'],
@@ -222,6 +265,36 @@ function testStripper() {
   for (const [name, input, want] of cases) {
     check(`剥离正确：${name}`, stripComments(input) === want, JSON.stringify(stripComments(input)));
   }
+
+  // 默认全剥（发布版走的就是这条路）
+  check('默认全剥：块注释不留痕',
+    stripComments('/** 功能说明 */\nconst a = 1;').trim() === 'const a = 1;',
+    JSON.stringify(stripComments('/** 功能说明 */\nconst a = 1;')));
+  check('默认全剥：多行块注释不留痕',
+    stripComments('/*\n * a\n * b\n */\nconst x = 1;').trim() === 'const x = 1;');
+  check('默认全剥：行注释不留痕',
+    stripComments('const a = 1; // 说明\nconst b = 2;').trim() === 'const a = 1;\nconst b = 2;');
+  check('★ 默认全剥：模板串内的 CSS 块注释也剥',
+    (() => {
+      const out = stripComments('const css = `\n/* 设计史 */\n.a { color: red }\n`;');
+      return !out.includes('设计史') && out.includes('.a { color: red }');
+    })());
+  check('★ 但模板串里的 `//` 不能剥（`https://` 会中招）',
+    stripComments('const u = `https://a.com/x`;').includes('https://a.com/x'));
+
+  // keep 回调仍是一条通用开口（当前无人使用）
+  check('keep 回调可保留指定注释（通用开口）',
+    stripComments('/*keep*/\nx();', t => t.includes('keep')).includes('/*keep*/'));
+  check('keep 缺省 = 全剥', !stripComments('/*keep*/\nx();').includes('keep'));
+
+  // comments() 必须与剥离器同一套扫描逻辑
+  const sample = '/* a */\nconst x = 1; // b\nconst r = /\\/\\//;\nconst u = "https://x";';
+  const got = comments(sample);
+  check('comments() 收集 2 条注释、不把正则/字符串当注释', got.length === 2,
+    got.map(t => t.slice(0, 20)).join(' | '));
+  check('comments() 在剥干净的代码上收集到 0 条', comments(stripComments(sample)).length === 0);
+  check('codeSkeleton() 与剥离器同源（骨架比对用的就是它）',
+    codeSkeleton('/* c */\nconst a = 1;') === 'const a = 1;');
 }
 
 /* ================================================================ */
@@ -229,7 +302,7 @@ function testStripper() {
 (() => {
   console.log('构建拆分与注释剥离验证\n');
   testSize();
-  testStripped();
+  testNoComments();
   testIntegrity();
   testIdentity();
   testStripper();

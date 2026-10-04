@@ -2,9 +2,9 @@
 // @name         B站响度归一
 // @name:en      Bilibili_LoudNorm
 // @namespace    https://github.com/ADMA200/Bilibili_LoudNorm
-// @version      1.1.1
-// @description  全片响度归一：测量整段视频的响度并按需统一增益，拉齐 B 站连播音量（投稿 / 多P / 番剧影视）。不压缩原声、不干预播放器。
-// @description:en Normalizes the loudness of a whole video with a single gain, so consecutive Bilibili videos play at a consistent volume. No compression, no player interference.
+// @version      1.1.4
+// @description  全片响度归一：测量整段视频的响度并按需统一增益，拉齐 B 站连播音量（投稿 / 多P / 番剧影视）。不压缩原声、不干预播放器。不含课程与直播。
+// @description:en Normalizes the loudness of a whole video with a single gain, so consecutive Bilibili videos play at a consistent volume. No compression, no player interference. Covers video pages, playlists and bangumi; courses and live streams are not supported.
 // @author       Moxia9527
 // @license      MIT
 // @homepageURL  https://github.com/ADMA200/Bilibili_LoudNorm
@@ -26,18 +26,13 @@
 // @noframes
 // ==/UserScript==
 
-/*
- * B站响度归一 —— 源码与设计文档：https://github.com/ADMA200/Bilibili_LoudNorm
- */
-
 (function () {
 'use strict';
 
 const CONFIG = {
-  version: '1.1.1',
-  stage: 'S3.3.1',
+  version: '1.1.4',
+  stage: 'S3.3.4',
 
-  /** 总开关 */
   enabled: true,
 
   debug: false,
@@ -45,8 +40,6 @@ const CONFIG = {
   hud: false,
 
   forceSamplePath: false,
-
-  /* ---- 响度档案（§4.4） ---- */
 
   profile: 'standard',
 
@@ -56,11 +49,9 @@ const CONFIG = {
     headphone: { label: '耳机',   targetLufs: -16, maxBoostDb: 12, minGainDb: -60 },
     speaker:   { label: '外放',   targetLufs: -11, maxBoostDb: 10, minGainDb: -60 },
     night:     { label: '深夜',   targetLufs: -20, maxBoostDb:  6, minGainDb: -60 },
-    /** 拖动「目标响度 / 增益上下限」滑块时自动切到这一档（值由面板写入） */
+
     custom:    { label: '自定义', targetLufs: -14, maxBoostDb: 12, minGainDb: -24 },
   },
-
-  /* ---- 增益安全 ---- */
 
   peakCeilingDb: -1.0,
 
@@ -70,15 +61,12 @@ const CONFIG = {
 
   bypassToast: true,
 
-  /* ---- 抽样参数（§4.2） ---- */
-
-  /** 均匀抽取的段数（每段约 5s → 默认共约 60s 音频） */
   sampleSegments: 12,
 
   progressive: true,
-  /** 首批段数（从 12 段里等距挑，含首尾 → 依然覆盖 0%–100% 时间轴） */
+
   firstBatchSegments: 6,
-  /** 精修后增益与初测差多少 dB 才值得动一下（小于它就不抖了） */
+
   refineMinDeltaDb: 0.5,
 
   firstBatchEagerAt: 4,
@@ -86,7 +74,7 @@ const CONFIG = {
   concurrency: 6,
 
   requestGapMs: 80,
-  /** 单次 Range 请求超时（init/sidx 这类小请求用它） */
+
   fetchTimeoutMs: 15000,
 
   segTimeoutMs: 5000,
@@ -99,9 +87,8 @@ const CONFIG = {
 
   lumChunkFrames: 240000,
 
-  /** 首选音频档位：30232 ≈ 132kbps 中档，解码快、响度等价 */
   preferAudioId: 30232,
-  /** 不参与归一的音频档位（杜比 / Hi-Res，解码器可能不支持） */
+
   excludeAudioIds: [30250, 30251, 30280],
 
   pgcApi: 'https://api.bilibili.com/pgc/player/web/playurl',
@@ -115,18 +102,15 @@ const CONFIG = {
 
   pgcStreamWaitMs: 8000,
 
-  /** 是否显示设置面板（左侧边，Evolved 风格） */
   panel: true,
-  /** 面板在「网页全屏 / 真全屏」时完全隐藏 */
-  fullscreenHide: true,
-  /** 目标响度滑块范围（LUFS） */
-  targetRange: [-28, -8],
-  /** 增益上限滑块范围（dB） */
-  maxBoostRange: [0, 18],
-  /** 增益下限滑块范围（dB，取负） */
-  minGainRange: [0, -60],
 
-  /* ---- 缓存（§9） ---- */
+  fullscreenHide: true,
+
+  targetRange: [-28, -8],
+
+  maxBoostRange: [0, 18],
+
+  minGainRange: [0, -60],
 
   cacheMaxEntries: 800,
   cacheTtlDays: 30,
@@ -134,16 +118,15 @@ const CONFIG = {
   streamWaitToleranceSec: 3,
 
   streamWaitGraceSec: 20,
-  /** 等切流时的回访间隔（毫秒）。靠它轮询，durationchange 事件也会立刻唤醒 */
+
   streamWaitRetryMs: 700,
 
   viewCacheTtlMs: 10 * 60 * 1000,
 
-  /** video 元素发现轮询间隔。必须 setInterval 而非 rAF：后台标签页 rAF 会被冻结 */
   pollIntervalMs: 300,
 
   mutationDebounceMs: 250,
-  /** 播放器容器选择器，新 → 旧按序尝试 */
+
   playerSelectors: [
     '.bpx-player-container',
     '.bpx-player-primary-area',
@@ -178,9 +161,8 @@ const Log = (() => {
     error(...a) { record('error', a); console.error(TAG, ...a); },
     debug(...a) { record('debug', a); if (debugOn) console.log(TAG, '[dbg]', ...a); },
 
-    /** 取走最近日志（不中断记录） */
     ring() { return ring.slice(); },
-    /** 清空环形缓冲 */
+
     clear() { ring.length = 0; },
   };
 })();
@@ -221,24 +203,20 @@ const Store = (() => {
     try {
       if (hasGM && typeof GM_deleteValue === 'function') GM_deleteValue(key);
       else localStorage.removeItem(key);
-    } catch (e) { /* 忽略 */ }
+    } catch (e) {  }
   }
-
-  /* ---- LRU ---- */
 
   function readIndex() {
     const idx = getRaw(INDEX_KEY);
     return Array.isArray(idx) ? idx : [];
   }
 
-  /** 写索引。失败 = 配额满，**返回 false 而不是抛**，交给调用方决定怎么补救 */
   function writeIndex(idx) {
     if (setRaw(INDEX_KEY, idx)) return true;
     Log.warn('缓存索引写入失败（存储配额可能已满）');
     return false;
   }
 
-  /** 把某个**全 key** 从索引里摘掉（数据由调用方负责删）；返回是否真改了索引 */
   function dropFromIndex(fullKey) {
     const idx = readIndex();
     const rest = idx.filter(e => e && e.k !== fullKey);
@@ -247,7 +225,6 @@ const Store = (() => {
     return true;
   }
 
-  /** 淘汰最旧的 n 条（连数据一起删）；返回实际删掉了几条 */
   function evictOldest(n) {
     const idx = readIndex();
     if (!idx.length) return 0;
@@ -263,7 +240,6 @@ const Store = (() => {
     const idx = readIndex().filter(e => e && e.k !== key);
     idx.push({ k: key, t: Date.now() });
 
-    // 正常每次只写一条，所以 idx 最多到 max+1，这个 while 一般只跑一轮
     const evicted = [];
     while (idx.length > CONFIG.cacheMaxEntries) {
       const old = idx.shift();
@@ -273,15 +249,12 @@ const Store = (() => {
     if (evicted.length) Log.debug(`LRU 淘汰 ${evicted.length} 条缓存`);
   }
 
-  /** 命中续期。已经在队尾就什么都不做 —— 否则每读一次都要写一遍索引 */
   function bump(key) {
     const idx = readIndex();
     const last = idx[idx.length - 1];
     if (last && last.k === key) return;
     touch(key);
   }
-
-  /* ---- 对外 ---- */
 
   function get(key) {
     const k = `${NS}:${key}`;
@@ -292,11 +265,11 @@ const Store = (() => {
     if (ttl > 0 && rec.analyzedAt && Date.now() - rec.analyzedAt > ttl) {
       Log.debug(`缓存过期，丢弃 ${key}`);
       delRaw(k);
-      dropFromIndex(k);   // 数据没了，索引项也得摘 —— 否则白占一个名额
+      dropFromIndex(k);
       return null;
     }
 
-    bump(k);              // 命中即续期：淘汰改按「最近使用」而非「最早写入」
+    bump(k);
     return rec;
   }
 
@@ -314,7 +287,6 @@ const Store = (() => {
     return false;
   }
 
-  /** 删单条（含索引项） */
   function remove(key) {
     const k = `${NS}:${key}`;
     delRaw(k);
@@ -340,8 +312,6 @@ const Store = (() => {
     });
   }
 
-  /* ---- 设置持久化 ---- */
-
   const SETTINGS_KEY = `${NS}:__settings`;
 
   function getSettings() {
@@ -360,7 +330,6 @@ const Store = (() => {
 
 const Sidx = (() => {
 
-  /** 读一个 box 头：{type, size, headerSize}；返回 null 表示越界 */
   function readBoxHeader(view, offset) {
     if (offset + 8 > view.byteLength) return null;
 
@@ -376,13 +345,13 @@ const Sidx = (() => {
     let headerSize = 8;
 
     if (size32 === 1) {
-      // largesize：64 位
+
       const hi = view.getUint32(offset + 8);
       const lo = view.getUint32(offset + 12);
       size = hi * 4294967296 + lo;
       headerSize = 16;
     } else if (size32 === 0) {
-      // 延伸到缓冲区末尾
+
       size = view.byteLength - offset;
     }
 
@@ -397,7 +366,6 @@ const Sidx = (() => {
       ? input
       : new DataView(input.buffer || input, input.byteOffset || 0, input.byteLength);
 
-    // 扫描顶层 box，定位 sidx（正常情况下第一个就是）
     let off = 0;
     let found = -1;
     let guard = 0;
@@ -413,9 +381,9 @@ const Sidx = (() => {
     let p = found + h.headerSize;
 
     const version = view.getUint8(p);
-    p += 4; // version(1) + flags(3)
+    p += 4;
 
-    p += 4; // reference_ID
+    p += 4;
     const timescale = view.getUint32(p);
     p += 4;
 
@@ -432,7 +400,7 @@ const Sidx = (() => {
       p += 4;
     }
 
-    p += 2; // reserved
+    p += 2;
     const count = view.getUint16(p);
     p += 2;
 
@@ -445,8 +413,8 @@ const Sidx = (() => {
     for (let i = 0; i < count; i++) {
       if (p + 12 > view.byteLength) break;
       const sizeWithType = view.getUint32(p);
-      const size = sizeWithType & 0x7fffffff; // 低 31 位
-      // const refType = (sizeWithType >>> 31) & 1;  // 0=media 1=index
+      const size = sizeWithType & 0x7fffffff;
+
       const duration = view.getUint32(p + 4);
       p += 12;
 
@@ -469,12 +437,11 @@ const Sidx = (() => {
       firstOffset,
       anchor: base,
       refs,
-      /** 索引区末尾 + 1 —— 与 Content-Length 比对可验证解析正确性 */
+
       endOffset: cursor,
     };
   }
 
-  /** 检查一段字节是否以指定 box 类型开头（用于验证索引基准点选对了） */
   function startsWithBox(input, type) {
     if (!input || input.byteLength < 8) return false;
     const v = input instanceof DataView
@@ -495,7 +462,6 @@ const Sidx = (() => {
     };
   }
 
-  /** 均匀抽取 want 个段（首段必取，避免片头静场把响度拉低） */
   function pickEvenly(refs, want) {
     const n = refs.length;
     if (!n) return [];
@@ -530,9 +496,6 @@ const Loudness = (() => {
   const ABS_GATE_LUFS = -70;
   const REL_GATE_LU = 10;
 
-  /* ---- K 加权滤波器 ---- */
-
-  /** 高架滤波：G=+3.999843853973347 dB, fc=1681.974450955533 Hz, Q=0.7071752369554196 */
   function highShelfCoeffs(fs) {
     const G = 3.999843853973347;
     const Q = 0.7071752369554196;
@@ -573,7 +536,6 @@ const Loudness = (() => {
     biquadRange(x, 0, x.length, c, st);
   }
 
-  /** IIR 的四个延迟单元。分块滤波必须把状态带过块边界，否则块间会有跳变 */
   function biquadState() { return { x1: 0, x2: 0, y1: 0, y2: 0 }; }
 
   function biquadRange(x, s, e, c, st) {
@@ -615,7 +577,6 @@ const Loudness = (() => {
         const src = b.getChannelData(c);
         dst.set(src, off);
 
-        // 首尾淡入淡出
         for (let i = 0; i < fade; i++) {
           const w = i / fade;
           dst[off + i] *= w;
@@ -626,8 +587,6 @@ const Loudness = (() => {
     }
     return out;
   }
-
-  /* ---- 主入口 ---- */
 
   async function measure(audioBuffer, opts) {
     const o = opts || {};
@@ -658,7 +617,6 @@ const Loudness = (() => {
       for (let s = 0; s < frames; s += chunk) {
         const e = Math.min(s + chunk, frames);
 
-        // 未加权峰值（真峰值近似）——必须在加权改写之前扫
         let pk = 0;
         for (let i = s; i < e; i++) {
           const a = buf[i] < 0 ? -buf[i] : buf[i];
@@ -666,7 +624,6 @@ const Loudness = (() => {
         }
         if (pk > truePeakLinear) truePeakLinear = pk;
 
-        // K 加权（状态跨块延续，结果与一次性滤波逐位相同）
         biquadRange(buf, s, e, hs, st1);
         biquadRange(buf, s, e, hp, st2);
 
@@ -682,18 +639,14 @@ const Loudness = (() => {
       }
     }
 
-    /* 声道能量直接相加（不除以声道数）—— 见上面 z 的说明 */
-
-    /* ---- 分块与门限 ---- */
-
     const blockLen = Math.round(0.4 * fs);
     const stepLen = Math.round(0.1 * fs);
 
-    const blockEnergy = [];   // 每个块的 Σz / blockLen
+    const blockEnergy = [];
     if (frames >= blockLen) {
       for (let s = 0; s + blockLen <= frames; s += stepLen) {
         let sum = 0;
-        // 分片累加，避免超长循环阻塞
+
         for (let i = s; i < s + blockLen; i++) sum += z[i];
         blockEnergy.push(sum / blockLen);
       }
@@ -701,13 +654,12 @@ const Loudness = (() => {
 
     const lufsOf = (energy) => OFFSET_691 + 10 * Math.log10(energy > 0 ? energy : 1e-12);
 
-    // d) 绝对门限
     const stage1 = blockEnergy.filter(e => lufsOf(e) >= ABS_GATE_LUFS);
 
     let integrated = null;
     let stage2 = [];
     if (stage1.length) {
-      // e) 相对门限
+
       let sum = 0;
       for (let i = 0; i < stage1.length; i++) sum += stage1[i];
       const meanEnergy = sum / stage1.length;
@@ -771,7 +723,6 @@ const GainPlanner = (() => {
     if (Number.isFinite(tp)) {
       ceilingHeadroom = CONFIG.peakCeilingDb - tp;
 
-      // 只夹「提升」的部分；衰减不受峰值约束
       const maxAllowedGain = Math.max(0, ceilingHeadroom);
       if (rawGainDb > maxAllowedGain) {
         gainDb = maxAllowedGain;
@@ -807,7 +758,6 @@ const GainPlanner = (() => {
     };
   }
 
-  /** 预设档案列表，供 UI 用 */
   function listProfiles() {
     return Object.keys(CONFIG.profiles).map(k => Object.assign({ key: k }, CONFIG.profiles[k]));
   }
@@ -817,7 +767,6 @@ const GainPlanner = (() => {
 
 const StateReader = (() => {
 
-  /** 页面上下文（Tampermonkey 沙箱下必须用 unsafeWindow 才能读到 B 站注入的全局量） */
   function page() {
     return (typeof unsafeWindow !== 'undefined' && unsafeWindow) ? unsafeWindow : window;
   }
@@ -852,6 +801,38 @@ const StateReader = (() => {
     if (m) return m[1];
     const q = query('ep_id');
     if (q && /^\d+$/.test(q)) return q;
+    const s = ssrEpId();
+    if (s) return s;
+    return null;
+  }
+
+  function ssrEpId() {
+    let r = null;
+    try { r = page().__playinfo__.result || null; } catch (e) { r = null; }
+    if (!r) return null;
+    const biz = r.play_view_business_info;
+    const sup = r.supplement;
+    const cands = [
+      biz && biz.episode_info && biz.episode_info.ep_id,
+      sup && sup.ogv_episode_info && sup.ogv_episode_info.episode_id,
+      epFromFormats(r),
+      r.ep_id,
+    ];
+    for (let i = 0; i < cands.length; i++) {
+      const v = cands[i];
+      if (Number.isFinite(v) && v > 0) return String(v);
+      if (typeof v === 'string' && /^\d+$/.test(v)) return v;
+    }
+    return null;
+  }
+
+  function epFromFormats(r) {
+    const list = r.video_info && r.video_info.support_formats;
+    if (!Array.isArray(list)) return null;
+    for (let i = 0; i < list.length; i++) {
+      const rep = list[i] && list[i].report;
+      if (rep && rep.ep_id !== undefined && rep.ep_id !== null) return rep.ep_id;
+    }
     return null;
   }
 
@@ -863,7 +844,6 @@ const StateReader = (() => {
     return null;
   }
 
-  /** 番剧 SSR 里的 arc（含 cid / bvid）—— 位置实测：__playinfo__.result.arc */
   function pgcArc() {
     try {
       const pi = page().__playinfo__;
@@ -885,7 +865,6 @@ const StateReader = (() => {
     return pgcRefEp === ep;
   }
 
-  /** SSR 里能拿到的时长（秒）—— 只在新鲜时采信（切集后那份属于上一个 ep） */
   function pgcSsrDuration(fresh) {
     if (!fresh) return null;
     try {
@@ -918,7 +897,6 @@ const StateReader = (() => {
     };
   }
 
-  /** 统一入口：当前页面的分析目标（普通投稿 / 番剧） */
   function target() {
     const k = kind();
     if (k === 'pgc') return pgcKey();
@@ -961,7 +939,6 @@ const StateReader = (() => {
     let title = null;
     let duration = null;
 
-    // 【关键】过期状态一律不采信 —— 里面的 cid/pages 属于上一个视频
     if (fresh) {
       const vd = st.videoData || null;
       const pages = vd && Array.isArray(vd.pages) ? vd.pages : null;
@@ -995,7 +972,6 @@ const StateReader = (() => {
     };
   }
 
-  /** 缓存 key：普通投稿 v:{bvid}:{cid}（cid 未知时退化为 p）；番剧 p:{ep_id} */
   function cacheKey(info) {
     if (!info) return null;
     if (info.kind === 'pgc') return info.epId ? `p:${info.epId}` : null;
@@ -1017,7 +993,6 @@ const PlayInfo = (() => {
   const API = 'https://api.bilibili.com/x/player/playurl';
   const VIEW_API = 'https://api.bilibili.com/x/web-interface/view';
 
-  /** 普通投稿的页型字段名统一是 camelCase，但仍做双读以防改版 */
   function pick(obj) {
     for (let i = 1; i < arguments.length; i++) {
       const k = arguments[i];
@@ -1048,7 +1023,6 @@ const PlayInfo = (() => {
     };
   }
 
-  /** 挑音频轨：排除杜比/Hi-Res（解码器未必支持）→ 优先中档 → 否则码率最高 */
   function chooseAudio(list) {
     const usable = list.filter(a => a.url && a.initRange && a.indexRange);
     if (!usable.length) return null;
@@ -1139,7 +1113,6 @@ const PlayInfo = (() => {
     const isDrm = !!(data.is_drm || (dash && dash.drm_tech_type) || data.widevine_pssh);
     const isPreview = data.is_preview === 1 || data.error_code === -10403;
 
-    // 时长：dash.duration 优先（秒），退 timelength（毫秒）
     let duration = null;
     if (dash && Number.isFinite(dash.duration)) duration = dash.duration;
     else if (Number.isFinite(data.timelength)) duration = data.timelength / 1000;
@@ -1154,14 +1127,11 @@ const PlayInfo = (() => {
       isPreview,
       hasDurlOnly,
       quality: pick(data, 'quality'),
-      /** 原始 data 对象引用 —— 作为「这份 playinfo 有没有被换过」的身份标识 */
+
       raw: data,
     };
   }
 
-  /* ---- 取数：页面 ---- */
-
-  /** 从页面读（零请求）。普通投稿吃 `.data`，番剧/影视吃 `.result`。 */
   function fromPage() {
     let pi = null;
     try {
@@ -1183,9 +1153,6 @@ const PlayInfo = (() => {
     return null;
   }
 
-  /* ---- 可信度：这份 playinfo 算不算数 ---- */
-
-  /** 上一次被采信的 playinfo 对象引用 + 它对应的 key */
   let acceptedRef = null;
   let acceptedKey = null;
 
@@ -1199,11 +1166,9 @@ const PlayInfo = (() => {
 
     if (sameObject && acceptedKey === key) return { ok: true, why: 'reuse-accepted' };
     if (sameObject) {
-      // 同一个对象却换了 key（普通投稿切分P / 番剧切集）→ 它装的是别的目标的流
+
       return { ok: false, why: isPgc ? '同一个 __playinfo__ 对象换了集（切集后未刷新）' : '同一个 __playinfo__ 对象换了目标（切分P 后未刷新）' };
     }
-
-    // ⚠️ 番剧页没有 __INITIAL_STATE__，不能用 bvid 交叉校验 →
 
     const fresh = isPgc ? StateReader.pgcFresh() : StateReader.pageFresh();
     if (fresh) return { ok: true, why: isPgc ? 'ssr-fresh(pgc)' : 'ssr-fresh' };
@@ -1222,8 +1187,6 @@ const PlayInfo = (() => {
         : `页面状态未刷新（__playinfo__ 时长 ${fmtSec(page.duration)}s，无替换证据）`,
     };
   }
-
-  /* ---- 取数：接口兜底 ---- */
 
   const viewCache = new Map();
 
@@ -1272,7 +1235,6 @@ const PlayInfo = (() => {
     return out;
   }
 
-  /** 兼容旧调用名 */
   async function resolveCid(info) {
     if (info && info.cid) return info.cid;
     return (await resolveVideo(info)).cid;
@@ -1280,7 +1242,6 @@ const PlayInfo = (() => {
 
   const pgcCache = new Map();
 
-  /** 带错误码标记的错误：skip=跳过分析、fatal=立即停手不重试 */
   function pgcErr(code, msg, info) {
     const e = new Error(`pgc playurl code=${code} ${msg || ''}（ep_id=${info && info.epId}）`);
     e.code = code;
@@ -1302,7 +1263,6 @@ const PlayInfo = (() => {
     const topCode = json && json.code;
     const result = json && json.result;
 
-    // ⚠️ 错误码要看两处：顶层 code 与 result.error_code（试看时顶层是 0、真错误在后一处）
     const innerCode = result && Number.isFinite(result.error_code) ? result.error_code : null;
 
     if (topCode !== 0) throw pgcErr(topCode, json && json.message, info);
@@ -1331,8 +1291,8 @@ const PlayInfo = (() => {
         return await pgcFetchOnce(info);
       } catch (e) {
         last = e;
-        if (e.fatal || e.skip) throw e;                       // 立即停手 / 跳过，不重试
-        if (PGC_RETRY_CODES.indexOf(e.code) < 0) throw e;     // 其它错误码不重试
+        if (e.fatal || e.skip) throw e;
+        if (PGC_RETRY_CODES.indexOf(e.code) < 0) throw e;
         Log.warn(`pgc playurl code=${e.code} → 退避重试（第 ${attempt + 1} 次）`);
         await new Promise(r => setTimeout(r, 300 + attempt * 400));
       }
@@ -1340,7 +1300,6 @@ const PlayInfo = (() => {
     throw last;
   }
 
-  /** 回落：调接口取流 */
   async function fromApi(info) {
     if (info && info.kind === 'pgc') return fromPgcApi(info);
 
@@ -1395,7 +1354,7 @@ const PlayInfo = (() => {
     acceptedRef = null;
     acceptedKey = null;
     pgcCache.clear();
-    try { StateReader.forgetPgc(); } catch (e) { /* 忽略 */ }
+    try { StateReader.forgetPgc(); } catch (e) {  }
   }
 
   return {
@@ -1409,8 +1368,6 @@ const PlayInfo = (() => {
 const Sampler = (() => {
 
   const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-  /* ---- 网络层 ---- */
 
   async function fetchRange(url, start, end, label, timeoutMs, retries) {
     const rangeValue = `bytes=${start}-${end}`;
@@ -1509,8 +1466,6 @@ const Sampler = (() => {
     return out;
   }
 
-  /* ---- 准备：取索引 ---- */
-
   async function prepare(audio, onStage, anchorOverride) {
     const stage = onStage || function () {};
 
@@ -1528,7 +1483,6 @@ const Sampler = (() => {
         .then(b => { at.indexMs = Date.now() - t0; return b; }),
     ]);
 
-    // sidx box 之后的第一个字节就是 first_offset 的基准点
     const anchor = Number.isFinite(anchorOverride) ? anchorOverride : (audio.indexRange.end + 1);
     const parsed = Sidx.parse(idxBuf, anchor);
     if (!parsed || !parsed.refs.length) throw new Error('sidx 解析失败');
@@ -1549,8 +1503,6 @@ const Sampler = (() => {
       prepMs: Date.now() - t0,
     };
   }
-
-  /* ---- 抽样：分批下载 ---- */
 
   function download(refs, audio, onStage, opts) {
     const o = opts || {};
@@ -1580,12 +1532,12 @@ const Sampler = (() => {
         dropped,
         bytes: segs.reduce((a, s) => a + s.buf.byteLength, 0),
         seconds: segs.reduce((a, s) => a + s.duration, 0),
-        /** 本批**申请**的音频总时长（含失败段）—— 覆盖率的分母 */
+
         requestedSeconds: refs.reduce((a, r) => a + r.duration, 0),
         wallMs: Date.now() - t0,
         slowestMs: sorted.length ? sorted[sorted.length - 1] : null,
         medianMs: sorted.length ? sorted[Math.floor(sorted.length / 2)] : null,
-        /** 是否为「够用即开工」的那一版快照 */
+
         partial: false,
       };
     }
@@ -1640,13 +1592,11 @@ const Sampler = (() => {
       return pack();
     })();
 
-    // 兜底：一批都没凑够阈值（段太少 / 大面积失败）时，early 也得兑现
     all.then(r => earlyResolve(r), () => earlyResolve(pack()));
 
     return { early, all };
   }
 
-  /** init + 单片段 → 一个可独立解码的 fMP4 */
   function fragmentBlob(initBuf, segBuf, mimeType) {
     return new Blob([initBuf, segBuf], { type: mimeType || 'audio/mp4' });
   }
@@ -1658,26 +1608,21 @@ const AudioEngine = (() => {
   let ctx = null;
   let masterGain = null;
 
-  /** 已成功 createMediaElementSource 的元素（防重复调用抛 InvalidStateError） */
   const attached = new WeakSet();
-  /** 尝试接管但失败的元素（如被 B 站杜比音效占用），不再重试以免刷屏 */
+
   const failed = new WeakSet();
-  /** 因 ctx 未 running 而暂缓接管的元素，等用户手势后补上 */
+
   const pending = new Set();
 
   let gestureArmed = false;
 
-  /** 当前**实际**施加的增益（dB）。分析未完成 / 未接管 / 旁路中时是 0 */
   let appliedGainDb = 0;
 
   let desiredGainDb = 0;
 
-  /** 旁路开关：true = 听原声（不施加增益），分析照跑、结果照存 */
   let bypass = false;
 
   const stats = { attached: 0, failed: 0, deferred: 0, resumes: 0, gainSets: 0, bypassToggles: 0 };
-
-  /* ---- 上下文 ---- */
 
   function ensureContext() {
     if (ctx) return ctx;
@@ -1691,7 +1636,7 @@ const AudioEngine = (() => {
     try {
       ctx = new AC();
       masterGain = ctx.createGain();
-      masterGain.gain.value = 1.0; // 分析完成前保持原声
+      masterGain.gain.value = 1.0;
       masterGain.connect(ctx.destination);
 
       const base = typeof ctx.baseLatency === 'number' ? (ctx.baseLatency * 1000).toFixed(1) : '?';
@@ -1721,10 +1666,8 @@ const AudioEngine = (() => {
     return ok;
   }
 
-  /* ---- 接管 ---- */
-
   function isVideoEl(el) {
-    // 用 tagName 而非 instanceof：userscript 沙箱下 instanceof 会因 realm 不同而失效
+
     return !!el && el.tagName === 'VIDEO';
   }
 
@@ -1739,7 +1682,6 @@ const AudioEngine = (() => {
     const c = ensureContext();
     if (!c) return false;
 
-    // 铁律 3：ctx 不 running 就绝不接管，否则必然静音
     if (c.state !== 'running') {
       const running = await ensureRunning();
       if (!running) {
@@ -1767,15 +1709,12 @@ const AudioEngine = (() => {
     } catch (e) {
       failed.add(el);
       stats.failed++;
-      // InvalidStateError：该元素已被别人 createMediaElementSource 过
-      // （典型场景：B 站「音量均衡」已开启并占用了音频源）
+
       const hint = e && e.name === 'InvalidStateError' ? '该元素音频源已被占用，保持原声' : '保持原声';
       Log.warn(`接管失败（${e && e.name || '未知'}）→ ${hint}`);
       return false;
     }
   }
-
-  /* ---- 增益 ---- */
 
   function setGainDb(db, opts) {
     const target = Number(db);
@@ -1785,7 +1724,6 @@ const AudioEngine = (() => {
     return applyGain(opts);
   }
 
-  /** 把「实际该施加多少」算出来写进图里。旁路时一律按 0dB（原声） */
   function applyGain(opts) {
     const target = bypass ? 0 : desiredGainDb;
 
@@ -1831,18 +1769,13 @@ const AudioEngine = (() => {
   function toggleBypass() { return setBypass(!bypass); }
   function isBypass() { return bypass; }
 
-  /** 当前增益（线性值，用于验证真的写进了图里） */
   function getGainValue() {
     return masterGain ? masterGain.gain.value : null;
   }
 
-  /** 当前**实际**增益（dB）—— 旁路中是 0 */
   function getAppliedGainDb() { return appliedGainDb; }
 
-  /** 归一流程想要施加的增益（dB）—— 旁路中也保留原值 */
   function getDesiredGainDb() { return desiredGainDb; }
-
-  /* ---- 手势与待接管队列 ---- */
 
   function armGestureHook() {
     if (gestureArmed) return;
@@ -1855,7 +1788,7 @@ const AudioEngine = (() => {
       Log.debug('捕获到用户手势');
 
       if (ctx) {
-        try { await ctx.resume(); } catch (e) { /* 忽略 */ }
+        try { await ctx.resume(); } catch (e) {  }
       }
       await drainPending();
     };
@@ -1876,8 +1809,6 @@ const AudioEngine = (() => {
       await tryAttach(el);
     }
   }
-
-  /* ---- 验证 ---- */
 
   async function probeSignal(durationMs = 600) {
     const c = ensureContext();
@@ -1911,7 +1842,7 @@ const AudioEngine = (() => {
       }, 50);
     });
 
-    try { masterGain.disconnect(analyser); } catch (e) { /* 忽略 */ }
+    try { masterGain.disconnect(analyser); } catch (e) {  }
 
     const rms = n ? Math.sqrt(sumSq / n) : 0;
     return {
@@ -1925,8 +1856,6 @@ const AudioEngine = (() => {
       verdict: peak > 1e-4 ? '有信号' : '静默',
     };
   }
-
-  /* ---- 对外 ---- */
 
   return {
     ensureContext,
@@ -2040,9 +1969,6 @@ const Hud = (() => {
     target.appendChild(host);
     Log.debug(`HUD 已挂载 · parent=${target.tagName} · readyState=${document.readyState}`);
 
-    // @run-at document-start 时 body 还不存在，只能先挂在 <html> 上。
-    // 虽然 position:fixed 通常不受父元素影响，但万一宿主 <html> 被加了
-    // transform / filter，fixed 的定位基准就会变。body 一出现就迁回去。
     if (target === document.documentElement) watchForBody();
     return true;
   }
@@ -2065,12 +1991,11 @@ const Hud = (() => {
         ac ? { childList: true, signal: ac.signal } : { childList: true });
 
       bodyWatcher = ac;
-      // 兜底：6 秒还没等到 body 就放弃（正常情况下页面不该缺 body）
+
       if (ac) setTimeout(() => { if (bodyWatcher === ac) { ac.abort(); bodyWatcher = null; } }, 6000);
-    } catch (e) { /* 忽略：迁不动就保持挂在 <html> */ }
+    } catch (e) {  }
   }
 
-  /** 兜底补挂：每 250ms 试一次，6 秒后放弃（避免长驻定时器） */
   function armMountRetry() {
     if (mount()) return;
     let tries = 0;
@@ -2111,7 +2036,7 @@ const Hud = (() => {
     let status = PHASE_TEXT[s.phase] || s.phase;
     if (s.phase === 'active') {
       status = `<span class="ok">已生效</span>`;
-      // 渐进式：初测 = 第一批已落位，精修可能还在后台跑
+
       if (s.refined === false) status += ` <span class="warn">初测</span>`;
       else if (s.refined === true) status += ` <span class="k">已精修</span>`;
     } else if (s.phase === 'error') status = `<span class="bad">失败</span>`;
@@ -2133,7 +2058,6 @@ const Hud = (() => {
       `<span class="k">增益 </span><span class="v">${fmtDb(s.gainDb)} dB</span>${limitText}`,
     ];
 
-    // 抽样路径才有的细节：覆盖了多少音频、解码是否完整
     if (s.audioSeconds) {
       const ratio = Number.isFinite(s.decodeRatio) ? ` (${(s.decodeRatio * 100).toFixed(0)}%)` : '';
       lines.push(`<span class="k">抽样 </span><span class="v">${s.picked}/${s.sidxSegments} 段 · ${s.audioSeconds}s${ratio}</span>`);
@@ -2173,7 +2097,6 @@ const Hud = (() => {
     scheduleRefresh();
   }
 
-  /** 阶段文字里的抽样进度需要 1Hz 刷新 */
   function scheduleRefresh() {
     if (timer) return;
     timer = setInterval(() => {
@@ -2182,9 +2105,6 @@ const Hud = (() => {
     }, 1000);
   }
 
-  /* ---- toast ---- */
-
-  /** toast 的宿主样式（与 HUD 同规则：all:initial 必须排最前） */
   const TOAST_CSS = [
     'all:initial',
     'display:block',
@@ -2244,7 +2164,7 @@ const Hud = (() => {
   function setEnabled(v) {
     enabled = !!v;
     if (!enabled) {
-      if (bodyWatcher) { try { bodyWatcher.abort(); } catch (e) { /* 忽略 */ } bodyWatcher = null; }
+      if (bodyWatcher) { try { bodyWatcher.abort(); } catch (e) {  } bodyWatcher = null; }
       if (host && host.parentNode) host.parentNode.removeChild(host);
       host = null; root = null; box = null;
     } else {
@@ -2304,7 +2224,7 @@ const Panel = (() => {
   let settingsPnl = null;
 
   let enabled = !!CONFIG.panel;
-  let open = null;              // null | 'status' | 'settings'
+  let open = null;
   let fsHidden = false;
   let darkNow = null;
 
@@ -2313,10 +2233,8 @@ const Panel = (() => {
   let lastSnap = null;
   let docClick = null;
 
-  const S = {};                 // 状态面板里各字段的引用
-  const C = {};                 // 设置面板里各控件的引用
-
-  /* ---- 全屏判定 ---- */
+  const S = {};
+  const C = {};
 
   function classHit(el) {
     if (!el) return false;
@@ -2328,7 +2246,7 @@ const Panel = (() => {
   function isFullscreen() {
     try {
       if (document.fullscreenElement || document.webkitFullscreenElement) return true;
-    } catch (e) { /* 忽略 */ }
+    } catch (e) {  }
 
     if (classHit(document.body) || classHit(document.documentElement)) return true;
 
@@ -2336,7 +2254,6 @@ const Panel = (() => {
     try { box = document.querySelector('.bpx-player-container') || document.querySelector('#bilibili-player'); } catch (e) { box = null; }
     if (classHit(box)) return true;
 
-    // 几何兜底：容器铺满视口（留 2px 容差）
     if (box && box.getBoundingClientRect) {
       const r = box.getBoundingClientRect();
       if (r.width >= innerWidth - 2 && r.height >= innerHeight - 2 && innerWidth > 200) return true;
@@ -2344,9 +2261,6 @@ const Panel = (() => {
     return false;
   }
 
-  /* ---- 设置读写 ---- */
-
-  /** 启动时把持久化的设置套回 CONFIG（必须在首次分析之前调用） */
   function load() {
     const s = Store.getSettings() || {};
     if (typeof s.enabled === 'boolean') CONFIG.enabled = s.enabled;
@@ -2367,7 +2281,6 @@ const Panel = (() => {
     });
   }
 
-  /** 设置变了 → 用缓存里的原始测量值立即重算（零下载零解码） */
   function reapply() {
     try {
       const p = Analyzer.reapply();
@@ -2377,13 +2290,11 @@ const Panel = (() => {
     }
   }
 
-  /* ---- 样式 ---- */
-
   const HOST_CSS = [
     'all:initial',
     'display:block',
     'position:fixed !important',
-    'left:0', 'top:33.333vh',      /* ← 按钮列中点锚在这条线上（.btns 再上移半高） */
+    'left:0', 'top:33.333vh',
     'z-index:2147483647 !important',
 
     'pointer-events:none',
@@ -2530,8 +2441,6 @@ const Panel = (() => {
   const VARS_LIGHT = '--theme:#fb7299;--fg:#18191c;--dim:#61666d;--panel-bg:#fff;--card-bg:#f6f7f8;--btn-bg:#ffffffaa;--button-bg:#fff;--bd:#8882;';
   const VARS_DARK = '--theme:#fb7299;--fg:#eee;--dim:#999;--panel-bg:#222;--card-bg:#282828;--btn-bg:#333a;--button-bg:#333;--bd:#8884;';
 
-  /* ---- DOM ---- */
-
   function el(tag, cls, text) {
     const e = document.createElement(tag);
     if (cls) e.className = cls;
@@ -2541,9 +2450,9 @@ const Panel = (() => {
 
   const SVG_NS = 'http://www.w3.org/2000/svg';
   const ICON = {
-    /** 均衡器（三条竖线）—— 「当前状态 / 响度读数」 */
+
     status: 'M10,20H14V4H10V20M4,20H8V12H4V20M16,9V20H20V9H16Z',
-    /** 齿轮 —— 「设置」，与 Evolved 的设置入口同款 */
+
     settings: 'M12,15.5A3.5,3.5 0 0,1 8.5,12A3.5,3.5 0 0,1 12,8.5A3.5,3.5 0 0,1 15.5,12A3.5,3.5 0 0,1 12,15.5M19.43,12.97C19.47,12.65 19.5,12.33 19.5,12C19.5,11.67 19.47,11.34 19.43,11L21.54,9.37C21.73,9.22 21.78,8.95 21.66,8.73L19.66,5.27C19.54,5.05 19.27,4.96 19.05,5.05L16.56,6.05C16.04,5.66 15.5,5.32 14.87,5.07L14.5,2.42C14.46,2.18 14.25,2 14,2H10C9.75,2 9.54,2.18 9.5,2.42L9.13,5.07C8.5,5.32 7.96,5.66 7.44,6.05L4.95,5.05C4.73,4.96 4.46,5.05 4.34,5.27L2.34,8.73C2.21,8.95 2.27,9.22 2.46,9.37L4.57,11C4.53,11.34 4.5,11.67 4.5,12C4.5,12.33 4.53,12.65 4.57,12.97L2.46,14.63C2.27,14.78 2.21,15.05 2.34,15.27L4.34,18.73C4.46,18.95 4.73,19.03 4.95,18.95L7.44,17.94C7.96,18.34 8.5,18.68 9.13,18.93L9.5,21.58C9.54,21.82 9.75,22 10,22H14C14.25,22 14.46,21.82 14.5,21.58L14.87,18.93C15.5,18.67 16.04,18.34 16.56,17.94L19.05,18.95C19.27,19.03 19.54,18.95 19.66,18.73L21.66,15.27C21.78,15.05 21.73,14.78 21.54,14.63L19.43,12.97Z',
   };
 
@@ -2606,8 +2515,7 @@ const Panel = (() => {
     S.bypass.addEventListener('click', () => {
       const on = Analyzer.toggleBypass();
       Hud.toast(on ? '旁路：听原声' : '恢复归一');
-      /* ⚠️ 必须重新取快照 —— bypass 是「实时读」的字段，
-       *    拿 render(lastSnap) 会把旧的 bypass 值画回去，按钮永远不翻面。 */
+
       render(Analyzer.snapshot());
     });
     bottom.appendChild(S.bypass);
@@ -2621,7 +2529,9 @@ const Panel = (() => {
 
       Hud.toast('重新测量中…');
       Analyzer.reanalyze().then(r => {
-        if (!r || !r.ok) Hud.toast('没有可测量的视频');
+        if (r && r.ok) return;
+
+        Hud.toast(r && r.reason === 'disabled' ? '响度归一当前是关闭的' : '没有可测量的视频');
       });
     });
     bottom.appendChild(S.remeasure);
@@ -2638,7 +2548,6 @@ const Panel = (() => {
     hd.appendChild(x);
     el0.appendChild(hd);
 
-    /* 功能开关 */
     const blk1 = el('div', 'blk');
     const sw = el('label', 'sw');
     sw.appendChild(el('span', null, '启用响度归一'));
@@ -2646,13 +2555,13 @@ const Panel = (() => {
     C.enabled.type = 'checkbox';
     C.enabled.addEventListener('change', () => {
       setEnabled(C.enabled.checked);
-      render(lastSnap);
+
+      render(Analyzer.snapshot());
     });
     sw.appendChild(C.enabled);
     blk1.appendChild(sw);
     el0.appendChild(blk1);
 
-    /* 预设 */
     const blk2 = el('div', 'blk');
     blk2.appendChild(el('div', 'k', '预设'));
     C.profile = document.createElement('select');
@@ -2672,7 +2581,6 @@ const Panel = (() => {
     blk2.appendChild(C.profile);
     el0.appendChild(blk2);
 
-    /* 滑块 */
     const blk3 = el('div', 'blk');
 
     const tr = CONFIG.targetRange || [-28, -8];
@@ -2712,7 +2620,6 @@ const Panel = (() => {
     });
     el0.appendChild(blk3);
 
-    /* 缓存 */
     const blk4 = el('div', 'blk');
     blk4.appendChild(el('div', 'k', '缓存'));
     C.cacheInfo = el('div', 'v', '—');
@@ -2752,7 +2659,6 @@ const Panel = (() => {
 
     const btns = el('div', 'btns');
 
-    /* 按钮内容是**图标**（不再是「状」「设」两个字），风格与 Evolved 侧边栏一致 */
     const bStatus = el('button', 'rd');
     bStatus.title = '当前状态';
     bStatus.setAttribute('aria-label', '当前状态');
@@ -2794,7 +2700,6 @@ const Panel = (() => {
     buildSettings(settingsPnl);
     side.appendChild(settingsPnl);
 
-    // 面板内的点击不要冒泡到页面（避免被 B 站自己的全局点击处理）
     side.addEventListener('click', (ev) => ev.stopPropagation());
 
     armMountRetry();
@@ -2820,7 +2725,7 @@ const Panel = (() => {
       obs.observe(document.documentElement, ac ? { childList: true, signal: ac.signal } : { childList: true });
       bodyWatcher = ac;
       if (ac) setTimeout(() => { if (bodyWatcher === ac) { ac.abort(); bodyWatcher = null; } }, 6000);
-    } catch (e) { /* 忽略 */ }
+    } catch (e) {  }
   }
 
   function armMountRetry() {
@@ -2834,8 +2739,6 @@ const Panel = (() => {
       }
     }, 250);
   }
-
-  /* ---- 交互 ---- */
 
   function showTip(text, btn) {
     if (!tip) return;
@@ -2891,11 +2794,9 @@ const Panel = (() => {
 
   function dropDocClick() {
     if (!docClick) return;
-    try { document.removeEventListener('click', docClick); } catch (e) { /* 忽略 */ }
+    try { document.removeEventListener('click', docClick); } catch (e) {  }
     docClick = null;
   }
-
-  /* ---- 渲染 ---- */
 
   function fmtDb(v, d) {
     if (!Number.isFinite(v)) return '—';
@@ -2970,7 +2871,6 @@ const Panel = (() => {
       C.cacheInfo.textContent = `${c.entries}/${c.maxEntries} 条 · ${c.backend}`;
     }
 
-    // 按钮点亮：功能开启 / 有结论
     if (S.btnStatus) S.btnStatus.classList.toggle('bl-on', !!(st.phase === 'active' && !st.bypass));
     if (S.btnSettings) S.btnSettings.classList.toggle('bl-on', !CONFIG.enabled);
 
@@ -2990,8 +2890,6 @@ const Panel = (() => {
     if (C.minGainVal) C.minGainVal.textContent = `${p.minGainDb} dB`;
   }
 
-  /* ---- 全屏隐藏 / 主题 ---- */
-
   function applyFullscreen() {
     if (!side) return;
     const hide = !!CONFIG.fullscreenHide && isFullscreen();
@@ -3005,8 +2903,8 @@ const Panel = (() => {
     try {
       if (document.body && document.body.classList.contains('dark')) return true;
       if (document.documentElement.classList.contains('dark')) return true;
-    } catch (e) { /* 忽略 */ }
-    try { if (matchMedia && matchMedia('(prefers-color-scheme: dark)').matches) return true; } catch (e) { /* 忽略 */ }
+    } catch (e) {  }
+    try { if (matchMedia && matchMedia('(prefers-color-scheme: dark)').matches) return true; } catch (e) {  }
     return false;
   }
 
@@ -3017,15 +2915,12 @@ const Panel = (() => {
     if (varsStyle) varsStyle.textContent = `:host{${d ? VARS_DARK : VARS_LIGHT}}`;
   }
 
-  /* ---- 对外 ---- */
-
   function setEnabled(v) {
     Analyzer.setEnabled(!!v);
     persist();
     syncControls();
   }
 
-  /** 周期刷新：状态用轮询拿（不侵入 analyzer），全屏与主题顺带一起查 */
   function startPoll() {
     if (pollTimer) return;
     pollTimer = setInterval(() => {
@@ -3044,8 +2939,7 @@ const Panel = (() => {
       startPoll();
       ensureDocClick();
 
-      // 全屏切换多半伴随 resize / class 变化，两种都监听，反应更快
-      try { window.addEventListener('resize', applyFullscreen); } catch (e) { /* 忽略 */ }
+      try { window.addEventListener('resize', applyFullscreen); } catch (e) {  }
       try {
         const ac = (typeof AbortController === 'function') ? new AbortController() : null;
         const obs = new MutationObserver(() => applyFullscreen());
@@ -3054,7 +2948,7 @@ const Panel = (() => {
             ? { attributes: true, attributeFilter: ['class'], subtree: true, signal: ac.signal }
             : { attributes: true, attributeFilter: ['class'], subtree: true });
         }
-      } catch (e) { /* 忽略 */ }
+      } catch (e) {  }
     }
     return true;
   }
@@ -3064,7 +2958,7 @@ const Panel = (() => {
     CONFIG.panel = enabled;
     if (!enabled) {
       if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-      if (bodyWatcher) { try { bodyWatcher.abort(); } catch (e) { /* 忽略 */ } bodyWatcher = null; }
+      if (bodyWatcher) { try { bodyWatcher.abort(); } catch (e) {  } bodyWatcher = null; }
       dropDocClick();
       if (host && host.parentNode) host.parentNode.removeChild(host);
       host = null; root = null; side = null; tip = null; varsStyle = null;
@@ -3113,7 +3007,7 @@ const Panel = (() => {
 
   function fsInfo() {
     let box = null;
-    try { box = document.querySelector('.bpx-player-container') || document.querySelector('#bilibili-player'); } catch (e) { /* 忽略 */ }
+    try { box = document.querySelector('.bpx-player-container') || document.querySelector('#bilibili-player'); } catch (e) {  }
     const r = box && box.getBoundingClientRect ? box.getBoundingClientRect() : null;
     return {
       detected: isFullscreen(),
@@ -3172,9 +3066,9 @@ const Analyzer = (() => {
     audioSeconds: null,
     decodeRatio: null,
     decodeFailed: null,
-    /** 渐进式：结果是否已经过第二批精修 */
+
     refined: null,
-    /** 精修是否真的改动了增益（差 < refineMinDeltaDb 就只更新记录） */
+
     refineMoved: null,
     refineDelta: null,
     timing: {},
@@ -3194,7 +3088,7 @@ const Analyzer = (() => {
       timing: Object.assign({}, state.timing), totalMs: state.totalMs,
       appliedGainLinear: AudioEngine.getGainValue(),
       ctxState: AudioEngine.getContextState(),
-      /* 旁路是实时读的 —— 它可以在分析结束之后被用户随手切 */
+
       bypass: AudioEngine.isBypass(),
       desiredGainDb: AudioEngine.getDesiredGainDb(),
       appliedGainDb: AudioEngine.getAppliedGainDb(),
@@ -3207,8 +3101,6 @@ const Analyzer = (() => {
     if (reason !== undefined) state.reason = reason;
     Hud.update(snapshot());
   }
-
-  /* ---- 解码与测量 ---- */
 
   function getOfflineCtor() {
     return window.OfflineAudioContext || window.webkitOfflineAudioContext || null;
@@ -3253,7 +3145,6 @@ const Analyzer = (() => {
     return { items, buffers: items.map(x => x.buffer), failed, requested: segs.length };
   }
 
-  /** 合并 + 测量（K 加权 / 门限 / 真峰值） */
   async function measureMerged(scope, buffers) {
     const merged = Loudness.concatBuffers(scope, buffers);
     if (!merged) throw new Error('没有可用的解码结果');
@@ -3269,9 +3160,21 @@ const Analyzer = (() => {
     return +(gotSec / wantSec).toFixed(3);
   }
 
-  /* ---- 单次分析 ---- */
+  function aborted(myJob) {
+    return jobSeq !== myJob || !CONFIG.enabled;
+  }
+
+  function land(key, planned, myJob) {
+    if (aborted(myJob)) return false;
+    AudioEngine.setGainDb(planned.gainDb);
+    appliedKey = key;
+    return true;
+  }
 
   async function analyzeKey(info, key, videoEl, myJob) {
+
+    if (aborted(myJob)) return;
+
     const t0 = Date.now();
     state.timing = {};
     state.totalMs = null;
@@ -3285,27 +3188,23 @@ const Analyzer = (() => {
     state.refineMoved = null;
     state.refineDelta = null;
 
-    /* 0. 换片先回中性，避免把上一个视频的增益带到新视频上 */
     appliedKey = null;
     AudioEngine.setGainDb(0);
 
     const stage = (ph, extra) => {
-      if (jobSeq !== myJob) return;
+      if (aborted(myJob)) return;
       push(ph, extra || {});
     };
 
-    /* 1. 缓存 */
     push('cache', { key: key, source: null, reason: null });
     const cached = Store.get(key);
     const cachedUsable = cached && Number.isFinite(cached.measuredLufs);
 
-    /* 上次只跑完初测就被切走了（coarse 缓存）→ 先秒出，再往下走精修 */
     const needsRefine = !!(cachedUsable && cached.coarse && CONFIG.progressive);
 
     if (cachedUsable && !needsRefine) {
       const planned = GainPlanner.plan({ measuredLufs: cached.measuredLufs, truePeakDb: cached.truePeakDb });
-      AudioEngine.setGainDb(planned.gainDb);
-      appliedKey = key;
+      if (!land(key, planned, myJob)) return;
       const record = {
         source: 'cache', measuredLufs: cached.measuredLufs, truePeakDb: cached.truePeakDb,
         sidxSegments: cached.sidxSegments, picked: cached.picked,
@@ -3324,8 +3223,7 @@ const Analyzer = (() => {
 
     if (needsRefine) {
       const planned0 = GainPlanner.plan({ measuredLufs: cached.measuredLufs, truePeakDb: cached.truePeakDb });
-      AudioEngine.setGainDb(planned0.gainDb);
-      appliedKey = key;
+      if (!land(key, planned0, myJob)) return;
       push('active', {
         key, source: 'cache', measuredLufs: cached.measuredLufs, truePeakDb: cached.truePeakDb,
         targetLufs: planned0.targetLufs, gainDb: planned0.gainDb, limited: planned0.limited,
@@ -3336,12 +3234,11 @@ const Analyzer = (() => {
       Log.info(`命中初测缓存 ${key}（${cached.measuredLufs} LUFS / ${cached.picked} 段）→ 先立即生效，再后台精修`);
     }
 
-    /* 2. 取流 */
     push('fetching');
     const tFetch = Date.now();
     const got = await PlayInfo.get(info, videoEl, key);
     state.timing.fetchMs = Date.now() - tFetch;
-    if (jobSeq !== myJob) return;
+    if (aborted(myJob)) return;
 
     const pi = got.info;
     if (!pi) throw new Error('取流失败：页面与接口都没有可用数据');
@@ -3360,25 +3257,22 @@ const Analyzer = (() => {
     let planned = null;
     let refined = null;
 
-    /* 3a. FastPath：B 站自己的响度元数据，零下载零解码 */
     if (!CONFIG.forceSamplePath && pi.volumeMeta && Number.isFinite(pi.volumeMeta.measuredI)) {
       measuredLufs = pi.volumeMeta.measuredI;
       truePeakDb = Number.isFinite(pi.volumeMeta.measuredTp) ? pi.volumeMeta.measuredTp : null;
       source = 'meta';
       planned = GainPlanner.plan({ measuredLufs, truePeakDb });
-      AudioEngine.setGainDb(planned.gainDb);
-      appliedKey = key;
+      if (!land(key, planned, myJob)) return;
       Log.info(`FastPath · B 站元数据 measured_i=${measuredLufs} LUFS · measured_tp=${truePeakDb} dBTP · target_i=${pi.volumeMeta.targetI}（零下载）`);
     } else {
-      /* 3b. SamplePath：全片抽样 + 本地测量（渐进式两批） */
+
       if (!pi.audio) throw new Error('没有可用的 dash 音频轨，无法抽样');
       Log.info(`SamplePath · 音频 id=${pi.audio.id} · ${pi.audio.mimeType} · ${(pi.audio.bandwidth / 1000).toFixed(0)}kbps · id 优先级命中`);
 
       const tSample = Date.now();
 
-      /* --- 取索引（init + sidx 并行） --- */
       let prep = await Sampler.prepare(pi.audio, stage);
-      if (jobSeq !== myJob) return;
+      if (aborted(myJob)) return;
 
       state.sidxSegments = prep.refs.length;
       state.timing.initMs = prep.initMs;
@@ -3405,28 +3299,25 @@ const Analyzer = (() => {
           label,
           wantAtLeast,
           onProgress: (d, t, drop) => {
-            if (jobSeq !== myJob) return;
+            if (aborted(myJob)) return;
             push('segments', { picked: picks.length, segDone: d, segTotal: t, segDropped: drop, refining: !!(extra && extra.refining) });
           },
         }, extra || {}),
       );
 
-      /* --- 第一批：够用就开工 --- */
       let h1 = startBatch(coarsePicks, prep, 'coarse');
       let first = await h1.early;
-      if (jobSeq !== myJob) return;
+      if (aborted(myJob)) return;
 
-      /* 自校验：正确基准点下，抽样段必须以 moof box 开头。
-       * 若不然（B 站改版 / 非标准封装），退回绝对偏移重下这一批。 */
       const looksRight = b => !!b.segs.length && Sidx.startsWithBox(b.segs[0].buf, 'moof');
       if (!looksRight(first)) {
         Log.warn(`首批抽样不是以 moof 开头（基准点 ${prep.anchor} 可能不对）→ 回退到绝对偏移重下`);
         try {
           prep = await Sampler.prepare(pi.audio, stage, 0);
-          if (jobSeq !== myJob) return;
+          if (aborted(myJob)) return;
           h1 = startBatch(coarsePicks, prep, 'coarse2');
           first = await h1.early;
-          if (jobSeq !== myJob) return;
+          if (aborted(myJob)) return;
         } catch (e) {
           Log.warn(`回退重下也失败：${(e && e.message) || e}`);
         }
@@ -3440,21 +3331,20 @@ const Analyzer = (() => {
 
       const OfflineCtor = getOfflineCtor();
       if (!OfflineCtor) throw new Error('浏览器不支持 OfflineAudioContext');
-      // 只借它的 decodeAudioData / createBuffer：B 站音频本来就是 48kHz，不触发重采样
+
       const scope = new OfflineCtor(1, 1, 48000);
 
-      /* --- 解码 + 测量 + 立即落位（此时可能还有段在后台取，不等） --- */
       push('decoding', { picked: first.ok, audioSeconds: +first.seconds.toFixed(1) });
       const tDecode = Date.now();
       const d1 = await decodeAll(scope, prep.initBuf, pi.audio.mimeType, first.segs);
-      if (jobSeq !== myJob) return;
+      if (aborted(myJob)) return;
       if (!d1.buffers.length) throw new Error('全部抽样段解码失败');
       state.timing.decodeMs = Date.now() - tDecode;
       state.decodeFailed = d1.failed;
 
       push('analyzing', { picked: first.ok });
       const r1 = await measureMerged(scope, d1.buffers);
-      if (jobSeq !== myJob) return;
+      if (aborted(myJob)) return;
       state.timing.lufsMs = r1.m.processedMs;
 
       measuredLufs = r1.m.lufs;
@@ -3463,11 +3353,9 @@ const Analyzer = (() => {
       if (!Number.isFinite(measuredLufs)) throw new Error('响度计算无有效结果（可能全片静音）');
 
       planned = GainPlanner.plan({ measuredLufs, truePeakDb });
-      AudioEngine.setGainDb(planned.gainDb);
-      appliedKey = key;
+      if (!land(key, planned, myJob)) return;
       refined = false;
 
-      /** 已经用过的段号 —— 后面补齐时靠它去重，绝不重复解码同一段 */
       const usedIdx = first.segs.map(s => s.index);
 
       state.timing.sampleMs = Date.now() - tSample;
@@ -3483,7 +3371,7 @@ const Analyzer = (() => {
       Log.info(`✓ 初测落位 · ${first.ok}/${first.requested} 段${first.partial ? '（够用即开工，其余在后台）' : ''} · ${state.audioSeconds}s 音频 · 实测 ${measuredLufs} LUFS → 增益 ${planned.gainDb >= 0 ? '+' : ''}${planned.gainDb}dB · 首批耗时 ${state.timing.firstMs}ms（下载 ${first.wallMs}ms，最慢段 ${first.slowestMs}ms / 中位 ${first.medianMs}ms）`);
 
       const b1 = await h1.all;
-      if (jobSeq !== myJob) return;
+      if (aborted(myJob)) return;
 
       const leftFromB1 = b1.segs.filter(s => usedIdx.indexOf(s.index) < 0);
 
@@ -3495,7 +3383,7 @@ const Analyzer = (() => {
           stage('segments', { picked: restPicks.length, segDone: 0, segTotal: restPicks.length, refining: true });
           const h2 = startBatch(restPicks, prep, 'fine', { refining: true, wantAtLeast: 0 });
           b2 = await h2.all;
-          if (jobSeq !== myJob) return;
+          if (aborted(myJob)) return;
         }
 
         const more = leftFromB1.concat(b2.segs);
@@ -3503,21 +3391,18 @@ const Analyzer = (() => {
         if (more.length) {
           push('decoding', { refining: true });
           const d2 = await decodeAll(scope, prep.initBuf, pi.audio.mimeType, more);
-          if (jobSeq !== myJob) return;
+          if (aborted(myJob)) return;
 
           if (d2.buffers.length) {
             push('analyzing', { refining: true });
             const r2 = await measureMerged(scope, d1.buffers.concat(d2.buffers));
-            if (jobSeq !== myJob) return;
+            if (aborted(myJob)) return;
 
             const planned2 = GainPlanner.plan({ measuredLufs: r2.m.lufs, truePeakDb: r2.m.truePeakDb });
             const delta = Math.abs(planned2.gainDb - planned.gainDb);
             const moved = delta >= CONFIG.refineMinDeltaDb;
 
-            if (moved) {
-              AudioEngine.setGainDb(planned2.gainDb);
-              appliedKey = key;
-            }
+            if (moved && !land(key, planned2, myJob)) return;
 
             measuredLufs = r2.m.lufs;
             truePeakDb = r2.m.truePeakDb;
@@ -3553,15 +3438,13 @@ const Analyzer = (() => {
       }
     }
 
-    /* 4. 收尾（FastPath 也在上面落了位；这里统一补状态与缓存） */
     if (!Number.isFinite(measuredLufs)) throw new Error('响度计算无有效结果（可能全片静音）');
     if (!planned) {
       planned = GainPlanner.plan({ measuredLufs, truePeakDb });
-      AudioEngine.setGainDb(planned.gainDb);
-      appliedKey = key;
+
+      if (!land(key, planned, myJob)) return;
     }
 
-    /* 5. 写缓存（存原始测量值，换档案立即重算） */
     Store.set(key, {
       measuredLufs,
       truePeakDb,
@@ -3615,10 +3498,8 @@ const Analyzer = (() => {
         首批下载ms: state.timing.sampleMs, 首批落位ms: state.timing.firstMs,
         精修ms: state.timing.refineMs, 总ms: state.totalMs,
       });
-    } catch (e) { /* 忽略 */ }
+    } catch (e) {  }
   }
-
-  /* ---- 入口 ---- */
 
   function fmtSec(v) { return Number.isFinite(v) ? v.toFixed(1) : '?'; }
 
@@ -3629,9 +3510,6 @@ const Analyzer = (() => {
     waiting = null;
   }
 
-  /**
-   * @returns {boolean} true = 已获准继续分析；false = 仍在等，调用方应立即 return
-   */
   function waitForStream(key, expected, actual) {
     if (!waiting || waiting.key !== key) {
       clearWait();
@@ -3640,7 +3518,6 @@ const Analyzer = (() => {
 
     const waited = (Date.now() - waiting.since) / 1000;
 
-    // 宽限期：等太久了就不再拿时长卡着（播放器行为异常时，永久等待比短暂错配更糟）
     if (waited > CONFIG.streamWaitGraceSec) {
       Log.warn(`等播放器切流已 ${waited.toFixed(0)}s 仍未切（元素 ${fmtSec(actual)}s vs 目标 ${fmtSec(expected)}s）→ 不再等待，按当前页面信息继续`);
       clearWait();
@@ -3670,7 +3547,7 @@ const Analyzer = (() => {
     const t0 = Date.now();
 
     for (;;) {
-      if (jobSeq !== myJob) return false;
+      if (aborted(myJob)) return false;
 
       const actual = Number.isFinite(videoEl.duration) ? videoEl.duration : null;
       if (actual && Math.abs(actual - expected) <= tol) return true;
@@ -3689,9 +3566,6 @@ const Analyzer = (() => {
     }
   }
 
-  /**
-   * 尝试分析当前 video。内部按 key 去重，可以放心高频调用。
-   */
   async function maybeRun(videoEl, reason) {
     if (!CONFIG.enabled) return;
     if (!videoEl || videoEl.tagName !== 'VIDEO') return;
@@ -3735,7 +3609,6 @@ const Analyzer = (() => {
     const key = StateReader.cacheKey(info);
     if (!key) return;
 
-    /* 等播放器切流：元素时长对不上目标视频就先挂起，绝不把增益压到错的流上 */
     const expected = Number.isFinite(info.duration) ? info.duration : null;
     const actual = Number.isFinite(videoEl.duration) ? videoEl.duration : null;
     if (expected && actual && Math.abs(expected - actual) > CONFIG.streamWaitToleranceSec) {
@@ -3745,29 +3618,31 @@ const Analyzer = (() => {
       clearWait();
     }
 
-    // 同一任务已在跑 / 已生效 → 不重复
     if (key === runningKey) return;
     if (key === appliedKey) {
-      // 回到同一视频（SPA 来回切 / loadedmetadata 二次触发）：
-      // 优先用本会话算出来的结论复现（保住「来源」的真实语义），
-      // 没有才退回读缓存。
+
       const known = computed.get(key);
-      const source = (known && known.measuredLufs) || (Store.get(key) || {});
+      const knownOk = !!(known && Number.isFinite(known.measuredLufs));
+      const source = knownOk ? known : (Store.get(key) || {});
       if (Number.isFinite(source.measuredLufs)) {
         const planned = GainPlanner.plan({ measuredLufs: source.measuredLufs, truePeakDb: source.truePeakDb });
+
         AudioEngine.setGainDb(planned.gainDb);
-        push('active', Object.assign({}, known || {
+        push('active', Object.assign({}, knownOk ? known : {
           source: 'cache',
           measuredLufs: source.measuredLufs,
           truePeakDb: source.truePeakDb,
           sidxSegments: source.sidxSegments,
           picked: source.picked,
+          audioSeconds: source.audioSeconds,
+          decodeRatio: source.decodeRatio,
+          refined: source.coarse === undefined ? null : !source.coarse,
         }, {
           key,
           targetLufs: planned.targetLufs, gainDb: planned.gainDb, limited: planned.limited,
           limitReason: planned.limitReason, reason: null, totalMs: 0,
         }));
-        Log.debug(`复用已算结果 ${key}（来源 ${(known && known.source) || 'cache'}）· 增益 ${planned.gainDb}dB`);
+        Log.debug(`复用已算结果 ${key}（来源 ${(knownOk && known.source) || 'cache'}）· 增益 ${planned.gainDb}dB`);
       }
       return;
     }
@@ -3780,7 +3655,8 @@ const Analyzer = (() => {
     try {
       await analyzeKey(info, key, videoEl, myJob);
     } catch (e) {
-      if (jobSeq === myJob) {
+
+      if (!aborted(myJob)) {
         if (e && e.skip) {
 
           AudioEngine.setGainDb(0);
@@ -3791,7 +3667,7 @@ const Analyzer = (() => {
           }, '跳过');
           Log.warn(`跳过分析（保持原声）· ${(e && e.message) || e}`);
         } else if (appliedKey !== key) {
-          // 铁律：失败只归零增益 + 更新状态，绝不干预播放
+
           AudioEngine.setGainDb(0);
           push('error', {
             key, source: null, gainDb: 0,
@@ -3800,8 +3676,7 @@ const Analyzer = (() => {
           });
           Log.warn(`分析失败（保持原声）· ${(e && e.message) || e}`);
         } else {
-          // 已经有结论落位了（例如命中初测缓存后精修失败）——
-          // 这时候把状态打成「失败」是误报：实际听感正常工作。
+
           Log.warn(`精修失败，保留已落位的结论 · ${(e && e.message) || e}`);
         }
       }
@@ -3811,6 +3686,9 @@ const Analyzer = (() => {
   }
 
   async function reanalyze() {
+
+    if (!CONFIG.enabled) return { ok: false, reason: 'disabled' };
+
     const el = Lifecycle.currentElement();
     if (!el) return { ok: false, reason: 'no-video' };
     const info = StateReader.target();
@@ -3818,12 +3696,15 @@ const Analyzer = (() => {
     if (key) Store.remove(key);
     appliedKey = null;
     clearWait();
-    PlayInfo.forget();   // 连「已采信过哪份 playinfo」的记忆一起清，强制重新判定
+    PlayInfo.forget();
     await maybeRun(el, '手动');
     return { ok: true, state: snapshot() };
   }
 
   async function reapply() {
+
+    if (!CONFIG.enabled) return { ok: false, reason: 'disabled' };
+
     const el = Lifecycle.currentElement();
     const info = StateReader.target();
     const key = info ? StateReader.cacheKey(info) : null;
@@ -3835,6 +3716,7 @@ const Analyzer = (() => {
     }
 
     const planned = GainPlanner.plan({ measuredLufs: cached.measuredLufs, truePeakDb: cached.truePeakDb });
+
     AudioEngine.setGainDb(planned.gainDb);
     appliedKey = key;
     push('active', {
@@ -3847,9 +3729,6 @@ const Analyzer = (() => {
     return { ok: true, state: snapshot(), el };
   }
 
-  /* ---- 旁路 ---- */
-
-  /** 旁路开关：不施加增益（听原声），但保留分析结果 —— 用于 A/B 对比 */
   function setBypass(v) {
     const on = AudioEngine.setBypass(v);
     push(state.phase, {});
@@ -3868,10 +3747,21 @@ const Analyzer = (() => {
     toggleBypass,
     isBypass,
     isEnabled() { return CONFIG.enabled; },
+
     setEnabled(v) {
-      CONFIG.enabled = !!v;
-      if (!v) { AudioEngine.setGainDb(0); push('idle', { gainDb: 0 }); }
-      Log.info('响度归一已' + (v ? '启用' : '停用'));
+      const on = !!v;
+      if (on === CONFIG.enabled) return on;
+      CONFIG.enabled = on;
+      appliedKey = null;
+
+      if (!on) {
+        AudioEngine.setGainDb(0);
+        push('idle', { gainDb: 0 });
+      } else {
+        maybeRun(Lifecycle.currentElement(), '启用').catch(e => Log.debug('启用后重跑异常', e && e.message));
+      }
+      Log.info('响度归一已' + (on ? '启用' : '停用'));
+      return on;
     },
   };
 })();
@@ -3890,7 +3780,6 @@ const Lifecycle = (() => {
     return !!el && el.tagName === 'VIDEO';
   }
 
-  /** 优先在播放器容器内找，找不到再全文档兜底 */
   function findVideo() {
     for (let i = 0; i < CONFIG.playerSelectors.length; i++) {
       let box = null;
@@ -3904,8 +3793,6 @@ const Lifecycle = (() => {
     return isVideoEl(v) ? v : null;
   }
 
-  /* ---- 媒体事件 ---- */
-
   const MEDIA_EVENTS = ['loadedmetadata', 'durationchange', 'emptied', 'abort', 'error'];
 
   function onMediaEvent(ev) {
@@ -3918,7 +3805,6 @@ const Lifecycle = (() => {
     const dur = Number.isFinite(el.duration) ? `${el.duration.toFixed(1)}s` : '?';
     Log.debug(`video 事件 ${ev.type} · duration=${dur} · readyState=${el.readyState}`);
 
-    // 时长确定后是分析的最佳时机：此时 dash.duration 的时效性校验也有了依据
     if (ev.type === 'loadedmetadata' || ev.type === 'durationchange') {
       Analyzer.maybeRun(el, ev.type).catch(e => Log.debug('maybeRun 异常', e && e.message));
     }
@@ -3931,8 +3817,6 @@ const Lifecycle = (() => {
   function unbindMediaEvents(el) {
     MEDIA_EVENTS.forEach(t => el.removeEventListener(t, onMediaEvent));
   }
-
-  /* ---- 主循环 ---- */
 
   async function tick(why) {
     obs.ticks++;
@@ -3959,8 +3843,8 @@ const Lifecycle = (() => {
       obs.elementSwaps++;
 
       if (!isFirst && prev) {
-        // 只解绑事件；【绝不】disconnect 旧元素的音频源
-        try { unbindMediaEvents(prev); } catch (e) { /* 忽略 */ }
+
+        try { unbindMediaEvents(prev); } catch (e) {  }
         Log.info(`video 元素被替换（第 ${obs.elementSwaps} 次）· 旧元素交还 GC，不做任何音频断连`);
       } else {
         Log.info(`发现 video 元素（${why}）· src=${String(el.currentSrc || el.src || '').slice(0, 58)}`);
@@ -3971,7 +3855,6 @@ const Lifecycle = (() => {
     const ok = await AudioEngine.tryAttach(el);
     if (ok) obs.attached = AudioEngine.stats().attached;
 
-    // 元素一变 或 路由一变就触发分析（内部按 key 去重，重复调用无副作用）
     if (swapped || urlChanged) {
       Analyzer.maybeRun(el, urlChanged ? '路由变化' : why).catch(e => Log.debug('maybeRun 异常', e && e.message));
     }
@@ -3998,12 +3881,10 @@ const Lifecycle = (() => {
     if (started) return;
     started = true;
 
-    // 主力：定时轮询。不依赖 DOM ready，后台标签页也不会冻结（不像 rAF）
     pollTimer = setInterval(() => {
       tick('poll').catch(e => Log.error('tick 异常', e && e.message));
     }, CONFIG.pollIntervalMs);
 
-    // 辅助：MutationObserver，仅用于「尽快」感知元素出现
     whenBodyReady(() => {
       try {
         observer = new MutationObserver(() => scheduleTick('mutation'));
@@ -4021,7 +3902,7 @@ const Lifecycle = (() => {
   function stop() {
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
     if (mutationDebounce) { clearTimeout(mutationDebounce); mutationDebounce = null; }
-    if (observer) { try { observer.disconnect(); } catch (e) { /* 忽略 */ } observer = null; }
+    if (observer) { try { observer.disconnect(); } catch (e) {  } observer = null; }
     started = false;
     Log.info('Lifecycle 已停止');
   }
@@ -4036,18 +3917,14 @@ const Lifecycle = (() => {
 
 const Main = (() => {
 
-  /** Safari / WebKit：MSE 源在 MediaElementAudioSourceNode 上输出全 0，WebKit 至今未修 */
   function isWebKitOnly() {
     const ua = navigator.userAgent;
     return /Safari/.test(ua) && !/Chrome|Chromium|CriOS|Edg|OPR|Firefox|FxiOS/.test(ua);
   }
 
-  /** 页型判定收敛到 StateReader.kind()（video / pgc / other），避免两处各写一份 */
   function pageKind() {
     return StateReader.kind();
   }
-
-  /* ---- 旁路 ---- */
 
   function hotkeyText() {
     const hk = CONFIG.bypassHotkey || {};
@@ -4082,7 +3959,6 @@ const Main = (() => {
       if (!!hk.ctrl !== ev.ctrlKey) return;
       if (!!hk.meta !== ev.metaKey) return;
 
-      // 别在输入框里抢按键（搜索框、评论框、发弹幕时按 B 不该切旁路）
       const t = ev.target;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
 
@@ -4145,7 +4021,6 @@ const Main = (() => {
     };
   }
 
-  /** 暴露到页面上下文，供 CDP / DevTools 直接读 —— 验证接口 */
   function exposeDebugApi() {
     const target = (typeof unsafeWindow !== 'undefined' && unsafeWindow) ? unsafeWindow : window;
     target.__biliLoudness = {
@@ -4155,14 +4030,13 @@ const Main = (() => {
       logs: () => Log.ring(),
       clearLogs: () => Log.clear(),
 
-      /* 分析相关 */
       analysis: () => Analyzer.snapshot(),
       reanalyze: () => Analyzer.reanalyze(),
       setEnabled: (v) => Analyzer.setEnabled(v),
       setProfile: (k) => {
         if (!CONFIG.profiles[k]) return { ok: false, reason: '未知档案' };
         CONFIG.profile = k;
-        // 换档案 → 用缓存里的原始测量值立即重算，零下载零解码
+
         return Analyzer.reapply();
       },
       listProfiles: () => GainPlanner.listProfiles(),
@@ -4172,7 +4046,6 @@ const Main = (() => {
         return CONFIG.forceSamplePath;
       },
 
-      /* 缓存 */
       cache: {
         stats: () => Store.stats(),
         list: () => Store.list(),
@@ -4229,7 +4102,6 @@ const Main = (() => {
         };
       },
 
-      /* 音频与信号 */
       getGain: () => AudioEngine.getGainValue(),
       getGainDb: () => AudioEngine.getAppliedGainDb(),
       getDesiredGainDb: () => AudioEngine.getDesiredGainDb(),
@@ -4239,7 +4111,6 @@ const Main = (() => {
       toggleBypass: () => Analyzer.toggleBypass(),
       isBypass: () => Analyzer.isBypass(),
 
-      /* 调试 / 诊断 */
       hud: (v) => Hud.setEnabled(v === undefined ? !Hud.isEnabled() : v),
       hudInfo: () => Hud.info(),
       setDebug: (v) => Log.setDebug(v),
@@ -4294,7 +4165,6 @@ const Main = (() => {
         };
       },
 
-      /* 生命周期 */
       start: () => Lifecycle.start(),
       stop: () => Lifecycle.stop(),
     };
@@ -4318,17 +4188,11 @@ const Main = (() => {
     const kindLabel = kind === 'pgc' ? '番剧/影视' : '普通投稿';
     Log.info(`页型 = ${kind}（${kindLabel}），启动接管 + 归一流程 · 档案=${GainPlanner.currentProfile().label}(${GainPlanner.currentProfile().targetLufs} LUFS)`);
 
-    // ⚠️ 面板必须在 Lifecycle.start() 之前 init —— 它会把持久化的设置
-    //    （开关 / 预设 / 自定义目标与上下限）套回 CONFIG，
-    //    晚了第一轮分析就会用默认档跑，白等一次抽样。
-    // ⚠️ 而且必须**兜住异常**：面板是 UI，核心是归一。UI 出错不该把
-
-    //    ShadowRoot 没有 style 属性 → 面板样式写崩 → 整个功能没起来）。
     try {
       Panel.init();
     } catch (e) {
       Log.warn('设置面板初始化失败（不影响归一功能）', e && e.message);
-      try { Panel.setPanelEnabled(false); } catch (e2) { /* 忽略 */ }
+      try { Panel.setPanelEnabled(false); } catch (e2) {  }
     }
 
     Lifecycle.start();

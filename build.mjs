@@ -11,22 +11,26 @@
  *   4. 语法自检（node --check），确保剥离注释没弄坏代码
  *
  * 产出**两个文件**：
- *   Bilibili_LoudNorm.user.js      发布版 —— 只保留「说明代码功能」的短注释，
- *                                  上传 GitHub / GreasyFork 用，体积约 150 KB
- *   Bilibili_LoudNorm.dev.user.js  开发版 —— 源码注释一字不动，约 215 KB，
+ *   Bilibili_LoudNorm.user.js      发布版 —— **零注释**，除 UserScript 元数据块
+ *                                  外不留任何注释，上传 GitHub / GreasyFork 用
+ *   Bilibili_LoudNorm.dev.user.js  开发版 —— 源码注释一字不动 + 模块分隔标题，
  *                                  仅供本地阅读 / 调试安装，不进仓库（见 .gitignore）
  *
  *   两者 @name / @namespace 不同 —— 油猴按「名字 + 命名空间」认脚本，
  *   因此可以同时安装，互不覆盖、互不更新。
  *
- * 注释怎么剥、保留哪些：见 strip-comments.mjs
+ * ⚠️ 约定：**以后的注释只写进开发版**（也就是 src/*.js，它会原样进 dev 产物）。
+ *    发布版的 user-visible 说明一律写进 @description —— 那才是装脚本的人
+ *    第一眼看到的地方，文件头注释他看不到。
+ *
+ * 注释怎么剥：见 strip-comments.mjs
  * ================================================================ */
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { stripComments, keepComment } from './strip-comments.mjs';
+import { stripComments } from './strip-comments.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const SRC = join(ROOT, 'src');
@@ -66,7 +70,7 @@ const SAFE_CALLS = [
   /masterGain\s*\.\s*disconnect\s*\(\s*analyser\s*\)/g, // 拆掉临时抽头，主链仍在
 ];
 
-const EN_DESC = 'Normalizes the loudness of a whole video with a single gain, so consecutive Bilibili videos play at a consistent volume. No compression, no player interference.';
+const EN_DESC = 'Normalizes the loudness of a whole video with a single gain, so consecutive Bilibili videos play at a consistent volume. No compression, no player interference. Covers video pages, playlists and bangumi; courses and live streams are not supported.';
 
 /* ---------------------------------------------------------------- */
 
@@ -90,14 +94,26 @@ function buildHeader(kind, version) {
     ? 'https://github.com/ADMA200/Bilibili_LoudNorm/dev'
     : 'https://github.com/ADMA200/Bilibili_LoudNorm';
   const desc = dev
-    ? '（开发版，含源码全部设计注释，仅供本地调试，请勿发布）全片响度归一：测量整段视频的响度并按需统一增益，拉齐 B 站连播音量（投稿 / 多P / 番剧影视）。不压缩原声、不干预播放器。'
-    : '全片响度归一：测量整段视频的响度并按需统一增益，拉齐 B 站连播音量（投稿 / 多P / 番剧影视）。不压缩原声、不干预播放器。';
+    ? '（开发版，含源码全部设计注释，仅供本地调试，请勿发布）全片响度归一：测量整段视频的响度并按需统一增益，拉齐 B 站连播音量（投稿 / 多P / 番剧影视）。不压缩原声、不干预播放器。不含课程与直播。'
+    : '全片响度归一：测量整段视频的响度并按需统一增益，拉齐 B 站连播音量（投稿 / 多P / 番剧影视）。不压缩原声、不干预播放器。不含课程与直播。';
   const descEn = dev
     ? '(dev build, keeps every source comment, local debugging only) ' + EN_DESC
     : EN_DESC;
 
   // ⚠️ @downloadURL / @updateURL 一律不写 —— GreasyFork 托管后会自动注入，
   //    手写会让开发版被正式版覆盖更新。
+  // ⚠️ 发布版**不加**文件头说明块（2026-10-04 起）：注释只进开发版。
+  //    这个 `// ==UserScript==` 块是元数据、不是注释 —— 剥掉脚本就废了，
+  //    GreasyFork 上传校验也会挂，所以它由本函数在剥离之后拼上。
+  const tail = dev
+    ? `/*
+ * 构建产物 —— 请勿直接编辑：改动请改 src/ 后运行 node build.mjs（${MODULES.length} 个模块）
+ * 本文件是**开发版**：源码注释全部保留 + 模块分隔标题，仅本地调试安装用。
+ * 生效范围：投稿 video/* · 列表 list/* · 番剧/影视 bangumi/play/*；不含课程与直播。
+ */
+`
+    : '';
+
   return `// ==UserScript==
 // @name         ${name}
 // @name:en      ${nameEn}
@@ -125,16 +141,7 @@ function buildHeader(kind, version) {
 // @run-at       document-start
 // @noframes
 // ==/UserScript==
-
-${dev
-  ? `/*
- * 构建产物 —— 请勿直接编辑：改动请改 src/ 后运行 node build.mjs（${MODULES.length} 个模块）
- * 本文件是**开发版**：源码注释全部保留 + 模块分隔标题，仅本地调试安装用。
- */`
-  : `/*
- * B站响度归一 —— 源码与设计文档：https://github.com/ADMA200/Bilibili_LoudNorm
- */`}
-`;
+${tail}`;
 }
 
 /** 去掉注释，避免注释里提到的禁用词被误判 */
@@ -193,7 +200,7 @@ function main() {
   const raw = readModules();
 
   const devCode = `${buildHeader('dev', version)}\n${wrap(raw)}`;
-  const releaseCode = `${buildHeader('release', version)}\n${wrap(stripComments(raw, keepComment))}`;
+  const releaseCode = `${buildHeader('release', version)}\n${wrap(stripComments(raw))}`;
 
   writeFileSync(OUTPUT_DEV, devCode, 'utf8');
   writeFileSync(OUTPUT_RELEASE, releaseCode, 'utf8');
@@ -202,8 +209,8 @@ function main() {
   const save = (1 - Buffer.byteLength(releaseCode) / Buffer.byteLength(devCode)) * 100;
 
   console.log(`✓ 构建完成  v${version}  ${MODULES.length} 个模块`);
-  console.log(`  发布版  ${kb(releaseCode).padStart(6)} KB  ${OUTPUT_RELEASE}`);
-  console.log(`  开发版  ${kb(devCode).padStart(6)} KB  ${OUTPUT_DEV}  （注释精简掉 ${save.toFixed(0)}%）`);
+  console.log(`  发布版  ${kb(releaseCode).padStart(6)} KB  ${OUTPUT_RELEASE}  （零注释）`);
+  console.log(`  开发版  ${kb(devCode).padStart(6)} KB  ${OUTPUT_DEV}  （注释全留，比发布版大 ${save.toFixed(0)}%）`);
 
   // 语法自检 —— 剥离注释若弄坏代码，这里立刻暴露
   for (const f of [OUTPUT_RELEASE, OUTPUT_DEV]) {

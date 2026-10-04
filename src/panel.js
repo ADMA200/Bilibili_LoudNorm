@@ -487,7 +487,9 @@ const Panel = (() => {
       /* 进度看「采样」那一行（render 会跟着 phase 走），这里只负责即时反馈 */
       Hud.toast('重新测量中…');
       Analyzer.reanalyze().then(r => {
-        if (!r || !r.ok) Hud.toast('没有可测量的视频');
+        if (r && r.ok) return;
+        /* 停用状态下点它是「没拆也没跑」，别报成「没有可测量的视频」误导人 */
+        Hud.toast(r && r.reason === 'disabled' ? '响度归一当前是关闭的' : '没有可测量的视频');
       });
     });
     bottom.appendChild(S.remeasure);
@@ -512,7 +514,9 @@ const Panel = (() => {
     C.enabled.type = 'checkbox';
     C.enabled.addEventListener('change', () => {
       setEnabled(C.enabled.checked);
-      render(lastSnap);
+      /* 用**当下**的快照，不用切换前那份：缓存命中的落位是同步做完的，
+       * 拿 lastSnap 会画出最多一个轮询周期（600ms）的「已开启 · 增益 —」空窗。 */
+      render(Analyzer.snapshot());
     });
     sw.appendChild(C.enabled);
     blk1.appendChild(sw);

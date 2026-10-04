@@ -25,8 +25,9 @@ B 站自己的「音量均衡」是**默认关闭**的，而且只覆盖**带响
 → 与原声**平滑过渡**施加一个固定增益。因为增益是整片一个常数，所以**开头与结尾一样准**，
 也不会像实时压缩那样「泵动」。
 
-**生效范围**：普通投稿 `video/*`、列表页 `list/*`、番剧/影视/纪录片/国创/综艺 `bangumi/play/*`。
-**不含**课程与直播。
+**生效范围**：普通投稿 `video/*`、列表页 `list/*`、番剧/影视/纪录片/国创/综艺 `bangumi/play/*`
+（含**季落地页** `ssXXXX`：B 站会在这种页上自动选集并直接开播，脚本会认出**正在播的那一集**，
+不必手动点一次分集）。脚本只挂这三个页型 —— **课程页与直播页根本不会加载**。
 
 ## 面板
 
@@ -62,6 +63,9 @@ B 站自己的「音量均衡」是**默认关闭**的，而且只覆盖**带响
 - **首次打开一个视频要等几秒**（要拉采样 + 解码 + 算响度）。看过的视频会命中缓存，秒进。
 - **缓存上限 800 条**（按最近使用淘汰），超出后最旧的会被清掉、下次重测。
 - **如果 B 站自带的「音量均衡」开着**，它会先占住音频链路，此时脚本自动降级为只调 `video.volume`。
+- **不支持直播，也不覆盖课程页。** 直播是持续的 FLV/HLS 分片流：没有 DASH 索引、没有 `__playinfo__`
+  元数据、也没有固定时长 —— 脚本赖以工作的两样东西（整片抽样、整片只有一个常数增益）都不成立。
+  脚本的 `@match` 不含 `live.bilibili.com`，直播页不会加载任何代码，也就不会产生任何影响。
 - 需要网络：测量要拉取片段音频（走 `GM_xmlhttpRequest`，`@connect` 四个 B 站域名）。
 
 ## 开发
@@ -76,24 +80,28 @@ node build.mjs      # 拼装 src/ → 两个产物 + 语法自检 + 铁律守卫
 
 | 文件 | 用途 | 注释 | 体积 |
 |---|---|---|---|
-| `Bilibili_LoudNorm.user.js` | **发布版** —— 上传 GitHub / GreasyFork | 只留说明代码功能的注释 | ≈ 146 KB |
-| `Bilibili_LoudNorm.dev.user.js` | 开发版 —— 本地调试安装 | 源码注释全留 + 模块分隔标题 | ≈ 213 KB |
+| `Bilibili_LoudNorm.user.js` | **发布版** —— 上传 GitHub / GreasyFork | **零注释**（只剩 UserScript 元数据块） | ≈ 134 KB |
+| `Bilibili_LoudNorm.dev.user.js` | 开发版 —— 本地调试安装 | 源码注释全留 + 模块分隔标题 | ≈ 220 KB |
 
 两者的 `@name` 与 `@namespace` 不同 —— 油猴按「名字 + 命名空间」认脚本，
 所以两个可以同时装，互不覆盖、也不会互相更新。开发版不随仓库发布（见 `.gitignore`），
 需要时 `node build.mjs` 随时生成。
 
-注释怎么剥、哪些留：见 [`strip-comments.mjs`](strip-comments.mjs)。
+> **约定：注释只写进开发版。** 交付产物除 `// ==UserScript==` 元数据块外不留任何注释 ——
+> 那个块是油猴 / GreasyFork 解析用的元数据（不是注释，剥了脚本就废了）。
+> 给用户看的说明一律写进 `@description`，那是装脚本的人唯一会看到的地方。
+> 剥离规则与实现见 [`strip-comments.mjs`](strip-comments.mjs)。
 
 ### 测试
 
 ```bash
 node probe/s2-unit.mjs          # 105 项
 node probe/s3-unit.mjs          #  31 项
-node probe/s3-pgc-unit.mjs      #  70 项
-node probe/s3-panel-unit.mjs    # 204 项
+node probe/s3-pgc-unit.mjs      #  75 项
+node probe/s3-panel-unit.mjs    # 205 项
 node probe/store-unit.mjs       #  44 项
-node probe/build-strip-unit.mjs #  66 项
+node probe/build-strip-unit.mjs #  76 项（发布版零注释 + 两版代码骨架一致）
+node probe/s3-enable-unit.mjs   #  77 项（总开关与增益落位）
 ```
 
 单元套件是**纯 Node、零依赖**，clone 下来直接能跑。端到端套件需要已登录的 B 站浏览器 profile，

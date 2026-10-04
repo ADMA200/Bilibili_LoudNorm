@@ -155,9 +155,48 @@ const Analyzer = (() => {
     return +(gotSec / wantSec).toFixed(3);
   }
 
+  /* -------------------------------------------------- 落位守门 */
+
+  /**
+   * 「本任务还该不该继续」。两个条件缺一不可：
+   *
+   *   ① jobSeq === myJob —— 没被新任务顶替（SPA 切视频后旧任务必须自我了断）
+   *   ② CONFIG.enabled   —— 用户此刻仍开着总开关
+   *
+   * ② 是 S3.3.2 补上的。原先所有落位点只看 ①，于是「分析途中关掉开关」会
+   * 出现这种事：关掉那一刻增益确实归了零，但分析稍后落位，+6dB 又写回音频图 ——
+   * 用户看到开关是关的，音量却变了。
+   *
+   * ⚠️ 别拿它当「任务还活着」的唯一判据：runningKey 的清理仍然只看
+   *    jobSeq === myJob。关掉开关也得解锁，否则重开之后同一个 key 会被
+   *    「已在跑」的去重逻辑一直挡住。
+   */
+  function aborted(myJob) {
+    return jobSeq !== myJob || !CONFIG.enabled;
+  }
+
+  /**
+   * **所有增益落位的唯一出口**。
+   *
+   * 直接把 `AudioEngine.setGainDb(planned.gainDb)` 写在流程里是危险的：
+   * 那条路径上没有任何一处会回头看总开关。走这里则同时受
+   * 「旧任务不得落位」和「开关关着不得落位」两条约束。
+   *
+   * @returns {boolean} 是否真的落位
+   */
+  function land(key, planned, myJob) {
+    if (aborted(myJob)) return false;
+    AudioEngine.setGainDb(planned.gainDb);
+    appliedKey = key;
+    return true;
+  }
+
   /* ---------------------------------------------------- 单次分析 */
 
   async function analyzeKey(info, key, videoEl, myJob) {
+    /* 动手前先确认还该不该干：补全视频信息那一步是异步的，期间开关可能已被关掉 */
+    if (aborted(myJob)) return;
+
     const t0 = Date.now();
     state.timing = {};
     state.totalMs = null;
@@ -176,7 +215,7 @@ const Analyzer = (() => {
     AudioEngine.setGainDb(0);
 
     const stage = (ph, extra) => {
-      if (jobSeq !== myJob) return;
+      if (aborted(myJob)) return;
       push(ph, extra || {});
     };
 
@@ -190,8 +229,7 @@ const Analyzer = (() => {
 
     if (cachedUsable && !needsRefine) {
       const planned = GainPlanner.plan({ measuredLufs: cached.measuredLufs, truePeakDb: cached.truePeakDb });
-      AudioEngine.setGainDb(planned.gainDb);
-      appliedKey = key;
+      if (!land(key, planned, myJob)) return;
       const record = {
         source: 'cache', measuredLufs: cached.measuredLufs, truePeakDb: cached.truePeakDb,
         sidxSegments: cached.sidxSegments, picked: cached.picked,
@@ -210,8 +248,7 @@ const Analyzer = (() => {
 
     if (needsRefine) {
       const planned0 = GainPlanner.plan({ measuredLufs: cached.measuredLufs, truePeakDb: cached.truePeakDb });
-      AudioEngine.setGainDb(planned0.gainDb);
-      appliedKey = key;
+      if (!land(key, planned0, myJob)) return;
       push('active', {
         key, source: 'cache', measuredLufs: cached.measuredLufs, truePeakDb: cached.truePeakDb,
         targetLufs: planned0.targetLufs, gainDb: planned0.gainDb, limited: planned0.limited,
@@ -227,7 +264,7 @@ const Analyzer = (() => {
     const tFetch = Date.now();
     const got = await PlayInfo.get(info, videoEl, key);
     state.timing.fetchMs = Date.now() - tFetch;
-    if (jobSeq !== myJob) return;
+    if (aborted(myJob)) return;
 
     const pi = got.info;
     if (!pi) throw new Error('取流失败：页面与接口都没有可用数据');
@@ -256,8 +293,7 @@ const Analyzer = (() => {
       truePeakDb = Number.isFinite(pi.volumeMeta.measuredTp) ? pi.volumeMeta.measuredTp : null;
       source = 'meta';
       planned = GainPlanner.plan({ measuredLufs, truePeakDb });
-      AudioEngine.setGainDb(planned.gainDb);
-      appliedKey = key;
+      if (!land(key, planned, myJob)) return;
       Log.info(`FastPath · B 站元数据 measured_i=${measuredLufs} LUFS · measured_tp=${truePeakDb} dBTP · target_i=${pi.volumeMeta.targetI}（零下载）`);
     } else {
       /* 3b. SamplePath：全片抽样 + 本地测量（渐进式两批） */
@@ -268,7 +304,7 @@ const Analyzer = (() => {
 
       /* --- 取索引（init + sidx 并行） --- */
       let prep = await Sampler.prepare(pi.audio, stage);
-      if (jobSeq !== myJob) return;
+      if (aborted(myJob)) return;
 
       state.sidxSegments = prep.refs.length;
       state.timing.initMs = prep.initMs;
@@ -305,7 +341,7 @@ const Analyzer = (() => {
           label,
           wantAtLeast,
           onProgress: (d, t, drop) => {
-            if (jobSeq !== myJob) return;
+            if (aborted(myJob)) return;
             push('segments', { picked: picks.length, segDone: d, segTotal: t, segDropped: drop, refining: !!(extra && extra.refining) });
           },
         }, extra || {}),
@@ -314,7 +350,7 @@ const Analyzer = (() => {
       /* --- 第一批：够用就开工 --- */
       let h1 = startBatch(coarsePicks, prep, 'coarse');
       let first = await h1.early;
-      if (jobSeq !== myJob) return;
+      if (aborted(myJob)) return;
 
       /* 自校验：正确基准点下，抽样段必须以 moof box 开头。
        * 若不然（B 站改版 / 非标准封装），退回绝对偏移重下这一批。 */
@@ -323,10 +359,10 @@ const Analyzer = (() => {
         Log.warn(`首批抽样不是以 moof 开头（基准点 ${prep.anchor} 可能不对）→ 回退到绝对偏移重下`);
         try {
           prep = await Sampler.prepare(pi.audio, stage, 0);
-          if (jobSeq !== myJob) return;
+          if (aborted(myJob)) return;
           h1 = startBatch(coarsePicks, prep, 'coarse2');
           first = await h1.early;
-          if (jobSeq !== myJob) return;
+          if (aborted(myJob)) return;
         } catch (e) {
           Log.warn(`回退重下也失败：${(e && e.message) || e}`);
         }
@@ -347,14 +383,14 @@ const Analyzer = (() => {
       push('decoding', { picked: first.ok, audioSeconds: +first.seconds.toFixed(1) });
       const tDecode = Date.now();
       const d1 = await decodeAll(scope, prep.initBuf, pi.audio.mimeType, first.segs);
-      if (jobSeq !== myJob) return;
+      if (aborted(myJob)) return;
       if (!d1.buffers.length) throw new Error('全部抽样段解码失败');
       state.timing.decodeMs = Date.now() - tDecode;
       state.decodeFailed = d1.failed;
 
       push('analyzing', { picked: first.ok });
       const r1 = await measureMerged(scope, d1.buffers);
-      if (jobSeq !== myJob) return;
+      if (aborted(myJob)) return;
       state.timing.lufsMs = r1.m.processedMs;
 
       measuredLufs = r1.m.lufs;
@@ -363,8 +399,7 @@ const Analyzer = (() => {
       if (!Number.isFinite(measuredLufs)) throw new Error('响度计算无有效结果（可能全片静音）');
 
       planned = GainPlanner.plan({ measuredLufs, truePeakDb });
-      AudioEngine.setGainDb(planned.gainDb);
-      appliedKey = key;
+      if (!land(key, planned, myJob)) return;
       refined = false;
 
       /** 已经用过的段号 —— 后面补齐时靠它去重，绝不重复解码同一段 */
@@ -388,7 +423,7 @@ const Analyzer = (() => {
        *   ② 第二批 restPicks
        * 全程只解码一次，不重复下也不重复算。 */
       const b1 = await h1.all;
-      if (jobSeq !== myJob) return;
+      if (aborted(myJob)) return;
 
       const leftFromB1 = b1.segs.filter(s => usedIdx.indexOf(s.index) < 0);
 
@@ -400,7 +435,7 @@ const Analyzer = (() => {
           stage('segments', { picked: restPicks.length, segDone: 0, segTotal: restPicks.length, refining: true });
           const h2 = startBatch(restPicks, prep, 'fine', { refining: true, wantAtLeast: 0 });
           b2 = await h2.all;
-          if (jobSeq !== myJob) return;
+          if (aborted(myJob)) return;
         }
 
         const more = leftFromB1.concat(b2.segs);
@@ -408,21 +443,18 @@ const Analyzer = (() => {
         if (more.length) {
           push('decoding', { refining: true });
           const d2 = await decodeAll(scope, prep.initBuf, pi.audio.mimeType, more);
-          if (jobSeq !== myJob) return;
+          if (aborted(myJob)) return;
 
           if (d2.buffers.length) {
             push('analyzing', { refining: true });
             const r2 = await measureMerged(scope, d1.buffers.concat(d2.buffers));
-            if (jobSeq !== myJob) return;
+            if (aborted(myJob)) return;
 
             const planned2 = GainPlanner.plan({ measuredLufs: r2.m.lufs, truePeakDb: r2.m.truePeakDb });
             const delta = Math.abs(planned2.gainDb - planned.gainDb);
             const moved = delta >= CONFIG.refineMinDeltaDb;
 
-            if (moved) {
-              AudioEngine.setGainDb(planned2.gainDb);
-              appliedKey = key;
-            }
+            if (moved && !land(key, planned2, myJob)) return;
 
             measuredLufs = r2.m.lufs;
             truePeakDb = r2.m.truePeakDb;
@@ -462,8 +494,8 @@ const Analyzer = (() => {
     if (!Number.isFinite(measuredLufs)) throw new Error('响度计算无有效结果（可能全片静音）');
     if (!planned) {
       planned = GainPlanner.plan({ measuredLufs, truePeakDb });
-      AudioEngine.setGainDb(planned.gainDb);
-      appliedKey = key;
+      /* 落位失败（开关在途中被关掉）→ 整段作废，不写缓存也不改状态 */
+      if (!land(key, planned, myJob)) return;
     }
 
     /* 5. 写缓存（存原始测量值，换档案立即重算） */
@@ -593,7 +625,7 @@ const Analyzer = (() => {
     const t0 = Date.now();
 
     for (;;) {
-      if (jobSeq !== myJob) return false;
+      if (aborted(myJob)) return false;
 
       const actual = Number.isFinite(videoEl.duration) ? videoEl.duration : null;
       if (actual && Math.abs(actual - expected) <= tol) return true;
@@ -679,26 +711,34 @@ const Analyzer = (() => {
     // 同一任务已在跑 / 已生效 → 不重复
     if (key === runningKey) return;
     if (key === appliedKey) {
-      // 回到同一视频（SPA 来回切 / loadedmetadata 二次触发）：
-      // 优先用本会话算出来的结论复现（保住「来源」的真实语义），
-      // 没有才退回读缓存。
+      /* 回到同一视频（SPA 来回切 / loadedmetadata 二次触发 / 元素被换掉重挂）：
+       * ① 优先用本会话算出来的结论复现（保住「来源」的真实语义），② 没有才读缓存。
+       *
+       * ⚠️ source 必须是**记录对象**：known 是记录，known.measuredLufs 是数字
+       *    （如 -20），写成 `(known && known.measuredLufs) || …` 会让 source 直接
+       *    变成那个数字，随后 source.measuredLufs 恒为 undefined → 整段静默失效。 */
       const known = computed.get(key);
-      const source = (known && known.measuredLufs) || (Store.get(key) || {});
+      const knownOk = !!(known && Number.isFinite(known.measuredLufs));
+      const source = knownOk ? known : (Store.get(key) || {});
       if (Number.isFinite(source.measuredLufs)) {
         const planned = GainPlanner.plan({ measuredLufs: source.measuredLufs, truePeakDb: source.truePeakDb });
+        /* 这里不必再查总开关 —— maybeRun 入口已经挡过一次 */
         AudioEngine.setGainDb(planned.gainDb);
-        push('active', Object.assign({}, known || {
+        push('active', Object.assign({}, knownOk ? known : {
           source: 'cache',
           measuredLufs: source.measuredLufs,
           truePeakDb: source.truePeakDb,
           sidxSegments: source.sidxSegments,
           picked: source.picked,
+          audioSeconds: source.audioSeconds,
+          decodeRatio: source.decodeRatio,
+          refined: source.coarse === undefined ? null : !source.coarse,
         }, {
           key,
           targetLufs: planned.targetLufs, gainDb: planned.gainDb, limited: planned.limited,
           limitReason: planned.limitReason, reason: null, totalMs: 0,
         }));
-        Log.debug(`复用已算结果 ${key}（来源 ${(known && known.source) || 'cache'}）· 增益 ${planned.gainDb}dB`);
+        Log.debug(`复用已算结果 ${key}（来源 ${(knownOk && known.source) || 'cache'}）· 增益 ${planned.gainDb}dB`);
       }
       return;
     }
@@ -711,7 +751,8 @@ const Analyzer = (() => {
     try {
       await analyzeKey(info, key, videoEl, myJob);
     } catch (e) {
-      if (jobSeq === myJob) {
+      /* 已被新任务顶替 / 用户已关掉开关 → 连错误都不必报（开关关着没什么可失败的） */
+      if (!aborted(myJob)) {
         if (e && e.skip) {
           /* 权限不足 / 地区限制 / 版权限制（番剧常见）——
            * 这不是「故障」，是这类内容本来就不该分析：保持原声、标「跳过」，
@@ -743,8 +784,14 @@ const Analyzer = (() => {
     }
   }
 
-  /** 手动重跑（清掉当前 key 的缓存）：调试用 */
+  /** 手动重跑：丢掉本视频已保存的测量结果，重新完整分析一遍（面板「重新测量本视频」） */
   async function reanalyze() {
+    /* 总开关关着就别拆 —— 这条路上是「先拆再跑」：拆完（丢缓存 + 清采信记忆）
+     * 之后 maybeRun 会在入口被 !CONFIG.enabled 拦下，等于白丢了这个视频的测量结果，
+     * 而返回值还是 ok —— 用户看到「重新测量中…」然后没有下文，下次启用还得重抽几秒。
+     * 与 reapply 同一把门。 */
+    if (!CONFIG.enabled) return { ok: false, reason: 'disabled' };
+
     const el = Lifecycle.currentElement();
     if (!el) return { ok: false, reason: 'no-video' };
     const info = StateReader.target();
@@ -762,6 +809,9 @@ const Analyzer = (() => {
    * 换目标响度/换档案走这条路 —— 零网络零解码，立即生效。
    */
   async function reapply() {
+    /* 总开关关着就不落位 —— 否则「停用状态下换个档案」会把增益凭空加回来 */
+    if (!CONFIG.enabled) return { ok: false, reason: 'disabled' };
+
     const el = Lifecycle.currentElement();
     const info = StateReader.target();
     const key = info ? StateReader.cacheKey(info) : null;
@@ -773,6 +823,7 @@ const Analyzer = (() => {
     }
 
     const planned = GainPlanner.plan({ measuredLufs: cached.measuredLufs, truePeakDb: cached.truePeakDb });
+    /* 这条路上没有 job 令牌，靠上面的总开关检查把关 */
     AudioEngine.setGainDb(planned.gainDb);
     appliedKey = key;
     push('active', {
@@ -806,10 +857,32 @@ const Analyzer = (() => {
     toggleBypass,
     isBypass,
     isEnabled() { return CONFIG.enabled; },
+    /**
+     * 总开关。
+     *
+     * 停用 = 增益归零，并且之后所有落位一律被拦（见 aborted）。
+     * 启用 = 立刻把**当前视频**重新走一遍，不必干等到下一个生命周期事件——
+     * 否则用户看到的是「开关显示已开启，音量却没回来」，得切个视频才生效。
+     *
+     * ⚠️ appliedKey 两边都要清掉。停用时「已生效」这个说法已经不成立（增益归零），
+     *    留着它会让重开时 maybeRun 走进「同一视频 → 不重复」的快速分支。
+     *
+     * @returns {boolean} 切换后的状态
+     */
     setEnabled(v) {
-      CONFIG.enabled = !!v;
-      if (!v) { AudioEngine.setGainDb(0); push('idle', { gainDb: 0 }); }
-      Log.info('响度归一已' + (v ? '启用' : '停用'));
+      const on = !!v;
+      if (on === CONFIG.enabled) return on;
+      CONFIG.enabled = on;
+      appliedKey = null;
+
+      if (!on) {
+        AudioEngine.setGainDb(0);
+        push('idle', { gainDb: 0 });
+      } else {
+        maybeRun(Lifecycle.currentElement(), '启用').catch(e => Log.debug('启用后重跑异常', e && e.message));
+      }
+      Log.info('响度归一已' + (on ? '启用' : '停用'));
+      return on;
     },
   };
 })();

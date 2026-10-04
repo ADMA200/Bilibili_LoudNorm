@@ -61,16 +61,63 @@ const StateReader = (() => {
   }
 
   /**
-   * 番剧集号 ep_id。三个来源：
-   *   /bangumi/play/ep308426              → 308426（最常见）
+   * 番剧集号 ep_id。四个来源（按权威度降序）：
+   *   /bangumi/play/ep308426              → 308426（用户明确打开的那一集，最权威）
    *   /bangumi/play/ss12345?ep_id=308426  → query 里的
-   *   /bangumi/play/ss12345               → 只有 season，没有集 → 返回 null（尚未定集，跳过）
+   *   __playinfo__.result.play_view_business_info.episode_info.ep_id  ← 季落地页
+   *   __playinfo__.result.supplement.ogv_episode_info.episode_id      ← 同上，兜底字段
+   *
+   * ⚠️ 后两条是为「**季落地页 /bangumi/play/ssXXX**」准备的，不能省：
+   *    实测（CDP 抓 ss29308）——B 站打开季落地页时会自动选中一集
+   *    （第一集 / 上次看到的那集）**并直接开始播放**，而 URL 里**始终没有 ep**。
+   *    只认 URL 的话 target() 返回 null，脚本报「未识别到页面目标」：
+   *    播放器明明在放、SSR 数据（含官方响度元数据）也齐全，却整个跳过；
+   *    用户必须手动点一次分集（URL 才变成 /epXXXX）才会归一。
+   *    pagePlayInfo/番剧 SSR 里这两处字段写的就是**正在播的那一集**
+   *    （实测 308426，与同一份 result 里的 arc.cid 配套）。
+   *
+   * ⚠️ URL 的优先级不能反：点分集时 URL 会变成 /epXXXX（实测），此时若还采信 SSR，
+   *    读到的是 SPA 切集后**没更新**的那一份（属于上一集）—— 增益会压错集。
    */
   function epId() {
     const m = location.pathname.match(/\/bangumi\/play\/ep(\d+)/);
     if (m) return m[1];
     const q = query('ep_id');
     if (q && /^\d+$/.test(q)) return q;
+    const s = ssrEpId();
+    if (s) return s;
+    return null;
+  }
+
+  /** 季落地页专用：从 __playinfo__.result 读「当前正在播的这一集」的 ep_id */
+  function ssrEpId() {
+    let r = null;
+    try { r = page().__playinfo__.result || null; } catch (e) { r = null; }
+    if (!r) return null;
+    const biz = r.play_view_business_info;
+    const sup = r.supplement;
+    const cands = [
+      biz && biz.episode_info && biz.episode_info.ep_id,
+      sup && sup.ogv_episode_info && sup.ogv_episode_info.episode_id,
+      epFromFormats(r),
+      r.ep_id,
+    ];
+    for (let i = 0; i < cands.length; i++) {
+      const v = cands[i];
+      if (Number.isFinite(v) && v > 0) return String(v);
+      if (typeof v === 'string' && /^\d+$/.test(v)) return v;
+    }
+    return null;
+  }
+
+  /** 兜底来源：清晰度档位的上报参数里也带当前集 ep（实测是字符串，页型覆盖面最广） */
+  function epFromFormats(r) {
+    const list = r.video_info && r.video_info.support_formats;
+    if (!Array.isArray(list)) return null;
+    for (let i = 0; i < list.length; i++) {
+      const rep = list[i] && list[i].report;
+      if (rep && rep.ep_id !== undefined && rep.ep_id !== null) return rep.ep_id;
+    }
     return null;
   }
 

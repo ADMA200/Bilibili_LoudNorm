@@ -12,8 +12,8 @@
 
 # 端到端与一次性探测脚本：依赖本机 headless 浏览器 + 已登录 B 站 profile，
 # 他人 clone 后无法复现，故不随仓库发布。
-# 公开的只有 6 个纯 Node 单元套件：s2-unit / s3-unit / s3-pgc-unit / s3-panel-unit /
-# store-unit / build-strip-unit
+# 公开的只有 7 个纯 Node 单元套件：s2-unit / s3-unit / s3-pgc-unit / s3-panel-unit /
+# store-unit / build-strip-unit / s3-enable-unit
 /probe/bl_*
 /probe/s1-*
 /probe/s2-hud-verify.mjs
@@ -22,6 +22,7 @@
 /probe/s3-fullscreen-probe.mjs
 /probe/s3-nav-*
 /probe/s3-panel-verify.mjs
+/probe/s3-enable-verify.mjs
 /probe/s3-pgc-api-shape.mjs
 /probe/s3-pgc-control.mjs
 /probe/s3-pgc-lufs.mjs

@@ -88,9 +88,18 @@ const SSR_RESULT = {
       target_offset: 0.1, target_i: -14, target_tp: -1,
       multi_scene_args: { high_dynamic_target_i: '-24', normal_target_i: '-14', undersized_target_i: '-28' },
     },
+    /* 当前集的 ep_id 也在清晰度档位的上报参数里（实测是 string） */
+    support_formats: [{ quality: 125, report: { ep_id: '308426' } }],
   },
   arc: { biz_type: 1, aid: 82446074, cid: 141064726, bvid: 'BV1GJ41157f6' },
   play_check: { play_detail: 'PLAY_WHOLE' },
+  /* 实测（CDP 抓 ss29308 落地页）：季落地页 URL 里没有 ep，但这两处写着
+   * 「当前正在播的那一集」—— 这就是 ss 页此前整个被跳过的原因 */
+  play_view_business_info: { episode_info: { ep_id: 308426, aid: 82446074, cid: 141064726 } },
+  supplement: {
+    ogv_episode_info: { episode_id: 308426 },
+    ogv_season_watch_progress: { last_ep_id: 308426 },
+  },
 };
 
 /** 接口形状：j.result（扁平 + camelCase，实测 s3-pgc-api-shape） */
@@ -129,9 +138,46 @@ section('1. StateReader：页型与 ep_id / season_id 识别');
   check('季路径 + ?ep_id= → ep_id 取 query', s2.epId() === '308426', s2.epId());
   check('季路径 → seasonId=12345', s2.seasonId() === '12345', s2.seasonId());
 
+  /* 季落地页：URL 里没有 ep，但 B 站已自动选集**并在播** → 从 SSR 取当前集。
+   * （旧实现只认 URL，这里返回 null，于是整页被跳过 —— 实测 ss29308 复现） */
   const env3 = pgcEnv({ href: 'https://www.bilibili.com/bangumi/play/ss12345' });
   const s3 = loadModules(env3).StateReader;
-  check('★ 只有 ss、没有 ep → epId 为 null（尚未定集，应跳过）', s3.epId() === null, String(s3.epId()));
+  check('★ 季落地页（URL 无 ep，B 站已自动在播一集）→ 从 SSR 取当前集 ep_id',
+    s3.epId() === '308426', String(s3.epId()));
+
+  /* SSR 里确实没有「当前集」信息 → 仍是 null（真的无集可分析，该跳过） */
+  const env3b = pgcEnv({
+    href: 'https://www.bilibili.com/bangumi/play/ss12345',
+    playinfo: { result: { video_info: { dash: { duration: 1442 } } } },
+  });
+  const s3b = loadModules(env3b).StateReader;
+  check('★ 季落地页且 SSR 无「当前集」字段 → epId 为 null（无集可分析）',
+    s3b.epId() === null, String(s3b.epId()));
+
+  /* 关键防护：URL 有 ep 时必须压过 SSR —— 否则 SPA 切集后 SSR 还是上一集，会压错 */
+  const env3c = pgcEnv({
+    href: 'https://www.bilibili.com/bangumi/play/ep309868',
+    playinfo: SSR_PI,                       // SSR 这一份仍是 308426
+  });
+  const s3c = loadModules(env3c).StateReader;
+  check('★ URL 的 ep 优先于 SSR（SSR 还是上一集时不得采信）',
+    s3c.epId() === '309868', String(s3c.epId()));
+
+  /* 三条来源各自单独可用（多路径兜底，跨页型） */
+  const ssrOnly = (mk) => pgcEnv({
+    href: 'https://www.bilibili.com/bangumi/play/ss12345',
+    playinfo: { result: mk() },
+  });
+  const s3d = loadModules(ssrOnly(() => ({ supplement: { ogv_episode_info: { episode_id: 309869 } } }))).StateReader;
+  check('★ 仅 supplement.ogv_episode_info 一条路径 → 也能取到',
+    s3d.epId() === '309869', String(s3d.epId()));
+
+  const s3e = loadModules(ssrOnly(() => ({ video_info: { support_formats: [{ report: { ep_id: '309870' } }] } }))).StateReader;
+  check('★ 仅清晰度档位 report.ep_id（字符串）一条路径 → 也能取到',
+    s3e.epId() === '309870', String(s3e.epId()));
+
+  const s3f = loadModules(ssrOnly(() => ({ supplement: { ogv_episode_info: { episode_id: '309871' } } }))).StateReader;
+  check('★ 集号以字符串给出时同样接受', s3f.epId() === '309871', String(s3f.epId()));
 
   const env4 = makeEnv({ href: 'https://www.bilibili.com/video/BV1GJ411x7h7/', initialState: null, playinfo: null });
   const s4 = loadModules(env4).StateReader;
